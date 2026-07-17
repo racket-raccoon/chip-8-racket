@@ -15,6 +15,32 @@
   (bytes-copy! (chip-8-memory c) load-address rom)
   (set-chip-8-pc! c load-address))
 
+(define (fetch-opcode c)
+  (define mem (chip-8-memory c))
+  (define pc (chip-8-pc c))
+  (define high (bytes-ref mem pc))
+  (define low (bytes-ref mem (add1 pc)))
+  (bitwise-ior (arithmetic-shift high 8) low))
+
+(define (decompose-opcode opcode)
+  ;; 0x [family] X Y N
+  ;; 0x [family] X N N
+  ;; 0x [family] N N N
+
+  ; first nibble
+  (define family (arithmetic-shift opcode (- 12)))
+  ; second nibble
+  (define X (bitwise-and (arithmetic-shift opcode (- 8)) #xF))
+  ; third nibble
+  (define Y (bitwise-and (arithmetic-shift opcode (- 4)) #xF))
+  ; fourth nibble
+  (define N (bitwise-and opcode #xF))
+  ; second byte. 8-bit immediate number
+  (define NN (bitwise-and opcode #xFF))
+  ; second, third and fourth nibbles. 12-bit immediate memory address
+  (define NNN (bitwise-and opcode #xFFF))
+  (list family X Y N NN NNN))
+
 (define test-rom
   (bytes #x00 #xE0 ; clear screen
          #x60 #x00 ; V0 = 0
@@ -53,4 +79,18 @@
              (check-rom-loaded chip test-rom)
              (load-rom! chip minimal-rom)
              (check-rom-loaded chip minimal-rom))
+
+  (test-case "fetch-opcode"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xAB #xCD))
+             (check-eq? (fetch-opcode chip) #xABCD))
+
+  (test-case "decompose-opcode"
+             (match-define (list family X Y N NN NNN) (decompose-opcode #xABCD))
+             (check-eq? family #xA)
+             (check-eq? X #xB)
+             (check-eq? Y #xC)
+             (check-eq? N #xD)
+             (check-eq? NN #xCD)
+             (check-eq? NNN #xBCD))
   )
