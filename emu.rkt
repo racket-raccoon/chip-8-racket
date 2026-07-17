@@ -41,6 +41,16 @@
   (define NNN (bitwise-and opcode #xFFF))
   (list family X Y N NN NNN))
 
+(define (step c)
+  ;; FETCH
+  (define opcode (fetch-opcode c))
+  (set-chip-8-pc! c (+ 2 (chip-8-pc c)))
+  ;; DECODE & EXECUTE
+  (match (decompose-opcode opcode)
+    #;[(list family X Y N NN NNN) ...]
+    [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
+  )
+
 (define test-rom
   (bytes #x00 #xE0 ; clear screen
          #x60 #x00 ; V0 = 0
@@ -57,6 +67,11 @@
          ))
 
 (define minimal-rom (bytes #x12 #x00))
+
+(module+ main
+  (define chip (make-chip-8))
+  (load-rom! chip test-rom)
+  (step chip))
 
 (module+ test
   (require rackunit)
