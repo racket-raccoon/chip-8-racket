@@ -1,0 +1,7 @@
+# Racket compilation artifacts
+compiled/
+*.zo
+*.dep
+
+# Editor backup files
+*~
