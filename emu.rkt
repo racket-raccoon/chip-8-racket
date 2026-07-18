@@ -1,6 +1,6 @@
 #lang racket
 
-(struct chip-8 (memory pc framebuffer) #:transparent #:mutable)
+(struct chip-8 (memory pc reg-v framebuffer) #:transparent #:mutable)
 
 (define memory-size #x1000)
 (define load-address #x200)
@@ -13,6 +13,8 @@
    (make-bytes memory-size)
    ;; program counter points at the current instruction in memory
    load-address
+   ;; 16 8-bit general-purpose variable registers, called V0 through VF
+   (make-bytes 16)
    ;; monochrome screen of 64 × 32 pixels,
    ;; top-left corner of the screen is assigned coordinates of (0x00, 0x00)
    ;; and the bottom-right is assigned (0x3F, 0x1F).
@@ -20,10 +22,13 @@
    ))
 
 (define (load-rom! c rom)
+  ; reset emulator state
   (bytes-fill! (chip-8-memory c) 0)
-  (bytes-fill! (chip-8-framebuffer c) 0)
   (bytes-copy! (chip-8-memory c) load-address rom)
-  (set-chip-8-pc! c load-address))
+  (set-chip-8-pc! c load-address)
+  (bytes-fill! (chip-8-reg-v c) 0)
+  (bytes-fill! (chip-8-framebuffer c) 0))
+
 
 (define (fetch-opcode c)
   (define mem (chip-8-memory c))
@@ -65,6 +70,8 @@
     [(list #x0 #x0 #xE #xE) (error "[TODO] Opcode 0x00ee not implemented!")]
     ; 0NNN Execute machine language subroutine - unsupported by this emulator
     [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
+    ; 6XNN Store number NN in register VX
+    [(list #x6 _ _ _) (bytes-set! (chip-8-reg-v c) X NN)]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   )
 
@@ -88,6 +95,7 @@
 (module+ main
   (define chip (make-chip-8))
   (load-rom! chip test-rom)
+  (step chip)
   (step chip))
 
 (module+ test
@@ -138,4 +146,16 @@
                            (make-bytes (* screen-height screen-width)))
              (check-eq? (chip-8-pc chip) (+ load-address 2))
              (check-eq? redraw-count 1))
+
+  (test-case "6XNN stores NN in register VX"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x6A #xCD))
+
+             (step chip)
+
+             (check-equal? (chip-8-reg-v chip)
+                           (bytes #x00 #x00 #x00 #x00
+                                  #x00 #x00 #x00 #x00
+                                  #x00 #x00 #xCD #x00
+                                  #x00 #x00 #x00 #x00)))
   )
