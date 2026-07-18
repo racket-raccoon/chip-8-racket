@@ -23,6 +23,16 @@
    (make-bytes (* screen-height screen-width))
    ))
 
+(define (chip-8-reg-v-ref c x) (bytes-ref (chip-8-reg-v c) x))
+(define (chip-8-reg-v-set! c x val) (bytes-set! (chip-8-reg-v c) x val))
+
+(define (chip-8-pixel-ref c x y)
+  (bytes-ref (chip-8-framebuffer c)
+             (+ x (* y screen-width))))
+(define (chip-8-pixel-set! c x y val)
+  (bytes-set! (chip-8-framebuffer c)
+              (+ x (* y screen-width)) val))
+
 (define (load-rom! c rom)
   ; reset emulator state
   (bytes-fill! (chip-8-memory c) 0)
@@ -74,9 +84,25 @@
     ; 0NNN Execute machine language subroutine - unsupported by this emulator
     [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
     ; 6XNN Store number NN in register VX
-    [(list #x6 _ _ _) (bytes-set! (chip-8-reg-v c) X NN)]
+    [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
     ; ANNN Store memory address NNN in register I
     [(list #xA _ _ _) (set-chip-8-i! c NNN)]
+    ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
+    ;      starting at the address stored in I.  Set VF to 01 if any set
+    ;      pixels are changed to unset, and 00 otherwise
+    [(list #xD _ _ _)
+     (define x (chip-8-reg-v-ref c X)) ; column
+     (define y (chip-8-reg-v-ref c Y)) ; row
+     (chip-8-reg-v-set! c #xF #x00)
+     (for ([n (in-range N)])
+       (define sprite-row (bytes-ref (chip-8-memory c) (+ (chip-8-i c) n)))
+       (for ([bit (in-inclusive-range 7 0 -1)]
+             [j (in-naturals)]
+             #:when (bitwise-bit-set? sprite-row bit))
+         (define old (chip-8-pixel-ref c (+ x j) (+ y n)))
+         (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
+         (chip-8-pixel-set! c (+ x j) (+ y n) (bitwise-xor old #x1))))
+     (request-redraw)]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   )
 
@@ -171,4 +197,54 @@
              (step chip)
 
              (check-eq? (chip-8-i chip) #xBCD))
+
+  (test-case "DXYN draws an in-bounds sprite at VX, VY"
+             (define chip (make-chip-8))
+             (load-rom! chip
+                        (bytes #xDA #xB5
+                               #xF0
+                               #x90
+                               #x90
+                               #x90
+                               #xF0))
+             (set-chip-8-i! chip (+ load-address 2))
+             (chip-8-reg-v-set! chip #xA 5)
+             (chip-8-reg-v-set! chip #xB 7)
+
+             (step chip)
+
+             (define expected (make-bytes (* screen-height screen-width)))
+             (for ([point '((5  7) (6  7) (7  7) (8  7)
+                            (5  8)               (8  8)
+                            (5  9)               (8  9)
+                            (5 10)               (8 10)
+                            (5 11) (6 11) (7 11) (8 11))])
+               (match-define (list x y) point)
+               (bytes-set! expected (+ x (* y screen-width)) 1))
+             (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "DXYN sets VF when two sprites overlap at one corner"
+             (define chip (make-chip-8))
+             (load-rom! chip
+                        (bytes #xD0 #x12
+                               #xD0 #x12
+                               #xC0
+                               #xC0))
+             (set-chip-8-i! chip (+ load-address 4))
+
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #xF) 0)
+
+             (chip-8-reg-v-set! chip #x0 1)
+             (chip-8-reg-v-set! chip #x1 1)
+             (step chip)
+
+             (define expected (make-bytes (* screen-height screen-width)))
+             (for ([point '((0 0) (1 0)
+                           (0 1)       (2 1)
+                                 (1 2) (2 2))])
+               (match-define (list x y) point)
+               (bytes-set! expected (+ x (* y screen-width)) 1))
+             (check-equal? (chip-8-framebuffer chip) expected)
+             (check-eq? (chip-8-reg-v-ref chip #xF) 1))
   )
