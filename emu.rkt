@@ -69,6 +69,20 @@
   (define NNN (bitwise-and opcode #xFFF))
   (list family X Y N NN NNN))
 
+(define (chip-8-draw-sprite! c X Y N)
+  (define x (remainder (chip-8-reg-v-ref c X) screen-width)) ; column
+  (define y (remainder (chip-8-reg-v-ref c Y) screen-height)) ; row
+  (chip-8-reg-v-set! c #xF #x00)
+  (for ([n (in-range N)] #:break (>= (+ y n) screen-height))
+    (define sprite-row (bytes-ref (chip-8-memory c) (+ (chip-8-i c) n)))
+    (for ([bit (in-inclusive-range 7 0 -1)]
+          [j (in-naturals)]
+          #:when (bitwise-bit-set? sprite-row bit)
+          #:break (>= (+ x j) screen-width))
+      (define old (chip-8-pixel-ref c (+ x j) (+ y n)))
+      (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
+      (chip-8-pixel-set! c (+ x j) (+ y n) (bitwise-xor old #x1)))))
+
 (define (step c [request-redraw void])
   ;; FETCH
   (define opcode (fetch-opcode c))
@@ -90,19 +104,7 @@
     ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
     ;      starting at the address stored in I.  Set VF to 01 if any set
     ;      pixels are changed to unset, and 00 otherwise
-    [(list #xD _ _ _)
-     (define x (chip-8-reg-v-ref c X)) ; column
-     (define y (chip-8-reg-v-ref c Y)) ; row
-     (chip-8-reg-v-set! c #xF #x00)
-     (for ([n (in-range N)])
-       (define sprite-row (bytes-ref (chip-8-memory c) (+ (chip-8-i c) n)))
-       (for ([bit (in-inclusive-range 7 0 -1)]
-             [j (in-naturals)]
-             #:when (bitwise-bit-set? sprite-row bit))
-         (define old (chip-8-pixel-ref c (+ x j) (+ y n)))
-         (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
-         (chip-8-pixel-set! c (+ x j) (+ y n) (bitwise-xor old #x1))))
-     (request-redraw)]
+    [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   )
 
@@ -215,10 +217,10 @@
 
              (define expected (make-bytes (* screen-height screen-width)))
              (for ([point '((5  7) (6  7) (7  7) (8  7)
-                            (5  8)               (8  8)
-                            (5  9)               (8  9)
-                            (5 10)               (8 10)
-                            (5 11) (6 11) (7 11) (8 11))])
+                                   (5  8)               (8  8)
+                                   (5  9)               (8  9)
+                                   (5 10)               (8 10)
+                                   (5 11) (6 11) (7 11) (8 11))])
                (match-define (list x y) point)
                (bytes-set! expected (+ x (* y screen-width)) 1))
              (check-equal? (chip-8-framebuffer chip) expected))
@@ -241,10 +243,29 @@
 
              (define expected (make-bytes (* screen-height screen-width)))
              (for ([point '((0 0) (1 0)
-                           (0 1)       (2 1)
-                                 (1 2) (2 2))])
+                                  (0 1)       (2 1)
+                                  (1 2) (2 2))])
                (match-define (list x y) point)
                (bytes-set! expected (+ x (* y screen-width)) 1))
              (check-equal? (chip-8-framebuffer chip) expected)
              (check-eq? (chip-8-reg-v-ref chip #xF) 1))
+
+  (test-case "DXYN normalizes its origin and clips at the screen edges"
+             (define chip (make-chip-8))
+             (load-rom! chip
+                        (bytes #xD0 #x12
+                               #xC0
+                               #xC0))
+             (set-chip-8-i! chip (+ load-address 2))
+             (chip-8-reg-v-set! chip #x0 #xFF)
+             (chip-8-reg-v-set! chip #x1 #xFF)
+
+             (step chip)
+
+             (define expected (make-bytes (* screen-height screen-width)))
+             (bytes-set! expected
+                         (+ (sub1 screen-width)
+                            (* (sub1 screen-height) screen-width))
+                         1)
+             (check-equal? (chip-8-framebuffer chip) expected))
   )
