@@ -1,6 +1,6 @@
 #lang racket
 
-(struct chip-8 (memory pc reg-v framebuffer) #:transparent #:mutable)
+(struct chip-8 (memory pc i reg-v framebuffer) #:transparent #:mutable)
 
 (define memory-size #x1000)
 (define load-address #x200)
@@ -13,6 +13,8 @@
    (make-bytes memory-size)
    ;; program counter points at the current instruction in memory
    load-address
+   ;; index register I, used to address memory locations 0x000 through 0xFFF
+   0
    ;; 16 8-bit general-purpose variable registers, called V0 through VF
    (make-bytes 16)
    ;; monochrome screen of 64 × 32 pixels,
@@ -26,6 +28,7 @@
   (bytes-fill! (chip-8-memory c) 0)
   (bytes-copy! (chip-8-memory c) load-address rom)
   (set-chip-8-pc! c load-address)
+  (set-chip-8-i! c 0)
   (bytes-fill! (chip-8-reg-v c) 0)
   (bytes-fill! (chip-8-framebuffer c) 0))
 
@@ -72,6 +75,8 @@
     [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
     ; 6XNN Store number NN in register VX
     [(list #x6 _ _ _) (bytes-set! (chip-8-reg-v c) X NN)]
+    ; ANNN Store memory address NNN in register I
+    [(list #xA _ _ _) (set-chip-8-i! c NNN)]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   )
 
@@ -95,8 +100,8 @@
 (module+ main
   (define chip (make-chip-8))
   (load-rom! chip test-rom)
-  (step chip)
-  (step chip))
+  (for ([i (in-naturals)])
+    (step chip)))
 
 (module+ test
   (require rackunit)
@@ -158,4 +163,12 @@
                                   #x00 #x00 #x00 #x00
                                   #x00 #x00 #xCD #x00
                                   #x00 #x00 #x00 #x00)))
+
+  (test-case "ANNN stores NNN in register I"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xAB #xCD))
+
+             (step chip)
+
+             (check-eq? (chip-8-i chip) #xBCD))
   )
