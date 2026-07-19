@@ -97,6 +97,8 @@
     [(list #x0 #x0 #xE #xE) (error "[TODO] Opcode 0x00ee not implemented!")]
     ; 0NNN Execute machine language subroutine - unsupported by this emulator
     [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
+    ; 1NNN Jump to address NNN
+    [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
     ; 6XNN Store number NN in register VX
     [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
     ; ANNN Store memory address NNN in register I
@@ -125,7 +127,7 @@
 
 (define minimal-rom (bytes #x12 #x00))
 
-(module+ main
+#;(module+ main
   (define chip (make-chip-8))
   (load-rom! chip test-rom)
   (for ([i (in-naturals)])
@@ -179,6 +181,14 @@
                            (make-bytes (* screen-height screen-width)))
              (check-eq? (chip-8-pc chip) (+ load-address 2))
              (check-eq? redraw-count 1))
+
+  (test-case "1NNN jumps to address NNN"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x1A #xBC))
+
+             (step chip)
+
+             (check-eq? (chip-8-pc chip) #xABC))
 
   (test-case "6XNN stores NN in register VX"
              (define chip (make-chip-8))
