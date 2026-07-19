@@ -1,5 +1,12 @@
 #lang racket
 
+(provide make-chip-8
+         load-rom!
+         step
+         chip-8-pixel-ref
+         screen-width
+         screen-height)
+
 (struct chip-8 (memory pc i reg-v framebuffer) #:transparent #:mutable)
 
 (define memory-size #x1000)
