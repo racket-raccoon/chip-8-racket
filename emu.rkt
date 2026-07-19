@@ -101,6 +101,11 @@
     [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
     ; 6XNN Store number NN in register VX
     [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
+    ; 7XNN Add the value NN to register VX
+    [(list #x7 _ _ _)
+     (define old-val (chip-8-reg-v-ref c X))
+     (define new-val (bitwise-and (+ old-val NN) #xFF))
+     (chip-8-reg-v-set! c X new-val)]
     ; ANNN Store memory address NNN in register I
     [(list #xA _ _ _) (set-chip-8-i! c NNN)]
     ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
@@ -201,6 +206,16 @@
                                   #x00 #x00 #x00 #x00
                                   #x00 #x00 #xCD #x00
                                   #x00 #x00 #x00 #x00)))
+
+  (test-case "7XNN adds NN to VX and wraps at 8 bits"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x6F #xFE
+                                    #x7F #x05))
+
+             (step chip)
+             (step chip)
+
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x03))
 
   (test-case "ANNN stores NNN in register I"
              (define chip (make-chip-8))
