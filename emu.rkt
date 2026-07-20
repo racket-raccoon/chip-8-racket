@@ -153,6 +153,8 @@
     [(list #x9 _ _ #x0) (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
     ; ANNN Store memory address NNN in register I
     [(list #xA _ _ _) (set-chip-8-i! c NNN)]
+    ; CXNN Set VX to a random number with a mask of NN
+    [(list #xC _ _ _) (chip-8-reg-v-set! c X (bitwise-and (random #x100) NN))]
     ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
     ;      starting at the address stored in I.  Set VF to 01 if any set
     ;      pixels are changed to unset, and 00 otherwise
@@ -385,6 +387,18 @@
              (step chip)
 
              (check-eq? (chip-8-i chip) #xBCD))
+
+  (test-case "CXNN stores a masked random byte in VX"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xCA #xA5))
+
+             (parameterize ([current-pseudo-random-generator
+                             (make-pseudo-random-generator)])
+               (random-seed 12345)
+               (step chip))
+
+             ;; The seeded random byte is 0x0D; 0x0D AND 0xA5 is 0x05.
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x05))
 
   (test-case "DXYN draws an in-bounds sprite at VX, VY"
              (define chip (make-chip-8))
