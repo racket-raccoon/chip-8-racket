@@ -7,9 +7,10 @@
          screen-width
          screen-height)
 
-(struct chip-8 (memory pc i reg-v framebuffer) #:transparent #:mutable)
+(struct chip-8 (memory pc i reg-v stack sp framebuffer) #:transparent #:mutable)
 
 (define memory-size #x1000)
+(define stack-size 12)
 (define load-address #x200)
 (define screen-height 32)
 (define screen-width 64)
@@ -24,6 +25,10 @@
    0
    ;; 16 8-bit general-purpose variable registers, called V0 through VF
    (make-bytes 16)
+   ;; stack space must be sufficient for up to 12 successive subroutine calls
+   (make-vector stack-size)
+   ;; stack pointer, index of the next free slot
+   0
    ;; monochrome screen of 64 × 32 pixels,
    ;; top-left corner of the screen is assigned coordinates of (0x00, 0x00)
    ;; and the bottom-right is assigned (0x3F, 0x1F).
@@ -40,6 +45,26 @@
   (bytes-set! (chip-8-framebuffer c)
               (+ x (* y screen-width)) val))
 
+(define (chip-8-stack-peek c)
+  (define stack (chip-8-stack c))
+  (define sp (chip-8-sp c))
+  (if (zero? sp) #f (vector-ref stack (sub1 sp))))
+
+(define (chip-8-stack-push! c val)
+  (define stack (chip-8-stack c))
+  (define sp (chip-8-sp c))
+  (when (= sp stack-size) (error "Stack Overflow"))
+  (vector-set! stack sp val)
+  (set-chip-8-sp! c (add1 sp)))
+
+(define (chip-8-stack-pop! c)
+  (define sp (chip-8-sp c))
+  (when (zero? sp) (error "Stack Underflow"))
+  (define top (chip-8-stack-peek c))
+  (vector-set! (chip-8-stack c) (sub1 sp) 0) ; optional
+  (set-chip-8-sp! c (sub1 sp))
+  top)
+
 (define (load-rom! c rom)
   ; reset emulator state
   (bytes-fill! (chip-8-memory c) 0)
@@ -47,8 +72,9 @@
   (set-chip-8-pc! c load-address)
   (set-chip-8-i! c 0)
   (bytes-fill! (chip-8-reg-v c) 0)
+  (vector-fill! (chip-8-stack c) 0)
+  (set-chip-8-sp! c 0)
   (bytes-fill! (chip-8-framebuffer c) 0))
-
 
 (define (fetch-opcode c)
   (define mem (chip-8-memory c))
@@ -139,9 +165,10 @@
 
 (define minimal-rom (bytes #x12 #x00))
 
-#;(module+ main
+(module+ main
   (define chip (make-chip-8))
-  (load-rom! chip test-rom)
+  (define rom (file->bytes "roms/test-opcode.ch8"))
+  (load-rom! chip rom)
   (for ([i (in-naturals)])
     (step chip)))
 
@@ -151,6 +178,31 @@
   (test-case "constructor"
              (define chip (make-chip-8))
              (check-equal? (chip-8-memory chip) (make-bytes memory-size 0)))
+
+  (test-case "empty stack cannot be popped"
+             (define chip (make-chip-8))
+
+             (check-false (chip-8-stack-peek chip))
+             (check-exn #rx"Stack Underflow"
+                        (lambda () (chip-8-stack-pop! chip))))
+
+  (test-case "stack stores addresses in LIFO order up to its capacity"
+             (define chip (make-chip-8))
+
+             (for ([address (in-range stack-size)])
+               (chip-8-stack-push! chip address))
+
+             (check-eq? (chip-8-sp chip) stack-size)
+             (check-eq? (chip-8-stack-peek chip) (sub1 stack-size))
+             (check-eq? (chip-8-sp chip) stack-size)
+             (check-exn #rx"Stack Overflow"
+                        (lambda () (chip-8-stack-push! chip #xABC)))
+
+             (for ([address (in-range (sub1 stack-size) -1 -1)])
+               (check-eq? (chip-8-stack-pop! chip) address))
+
+             (check-eq? (chip-8-sp chip) 0)
+             (check-false (chip-8-stack-peek chip)))
 
   (define (check-rom-loaded c rom)
     (check-eq? (chip-8-pc c) load-address)
