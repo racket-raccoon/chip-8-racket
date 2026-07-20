@@ -116,10 +116,12 @@
       (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
       (chip-8-pixel-set! c (+ x j) (+ y n) (bitwise-xor old #x1)))))
 
+(define (skip! c [n 1]) (set-chip-8-pc! c (+ (* 2 n) (chip-8-pc c))))
+
 (define (step c [request-redraw void])
   ;; FETCH
   (define opcode (fetch-opcode c))
-  (set-chip-8-pc! c (+ 2 (chip-8-pc c)))
+  (skip! c)
   ;; DECODE & EXECUTE
   (match-define (list family X Y N NN NNN) (decompose-opcode opcode))
   ;; https://github.com/mattmikolay/chip-8/wiki/CHIP%E2%80%908-Instruction-Set
@@ -134,6 +136,12 @@
     [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
     ; 2NNN Execute subroutine starting at address NNN
     [(list #x2 _ _ _) (chip-8-stack-push! c (chip-8-pc c)) (set-chip-8-pc! c NNN)]
+    ; 3XNN Skip the following instruction if the value of register VX equals NN
+    [(list #x3 _ _ _) (when (= (chip-8-reg-v-ref c X) NN) (skip! c))]
+    ; 4XNN Skip the following instruction if the value of register VX is not equal to NN
+    [(list #x4 _ _ _) (unless (= (chip-8-reg-v-ref c X) NN) (skip! c))]
+    ; 5XY0 Skip the following instruction if the value of register VX is equal to the value of register VY
+    [(list #x5 _ _ #x0) (when (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
     ; 6XNN Store number NN in register VX
     [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
     ; 7XNN Add the value NN to register VX
@@ -141,6 +149,8 @@
      (define old-val (chip-8-reg-v-ref c X))
      (define new-val (bitwise-and (+ old-val NN) #xFF))
      (chip-8-reg-v-set! c X new-val)]
+    ; 9XY0 Skip the following instruction if the value of register VX is not equal to the value of register VY
+    [(list #x9 _ _ #x0) (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
     ; ANNN Store memory address NNN in register I
     [(list #xA _ _ _) (set-chip-8-i! c NNN)]
     ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
@@ -280,6 +290,52 @@
              (step chip)
              (check-eq? (chip-8-reg-v-ref chip #x0) #xAA))
 
+  (test-case "3XNN skips only when VX equals NN"
+             (define equal-chip (make-chip-8))
+             (load-rom! equal-chip (bytes #x3A #x42))
+             (chip-8-reg-v-set! equal-chip #xA #x42)
+             (step equal-chip)
+             (check-eq? (chip-8-pc equal-chip) (+ load-address 4))
+
+             (define unequal-chip (make-chip-8))
+             (load-rom! unequal-chip (bytes #x3A #x42))
+             (chip-8-reg-v-set! unequal-chip #xA #x41)
+             (step unequal-chip)
+             (check-eq? (chip-8-pc unequal-chip) (+ load-address 2)))
+
+  (test-case "4XNN skips only when VX does not equal NN"
+             (define equal-chip (make-chip-8))
+             (load-rom! equal-chip (bytes #x4A #x42))
+             (chip-8-reg-v-set! equal-chip #xA #x42)
+             (step equal-chip)
+             (check-eq? (chip-8-pc equal-chip) (+ load-address 2))
+
+             (define unequal-chip (make-chip-8))
+             (load-rom! unequal-chip (bytes #x4A #x42))
+             (chip-8-reg-v-set! unequal-chip #xA #x41)
+             (step unequal-chip)
+             (check-eq? (chip-8-pc unequal-chip) (+ load-address 4)))
+
+  (test-case "5XY0 skips only when VX equals VY"
+             (define equal-chip (make-chip-8))
+             (load-rom! equal-chip (bytes #x5A #xB0))
+             (chip-8-reg-v-set! equal-chip #xA #x42)
+             (chip-8-reg-v-set! equal-chip #xB #x42)
+             (step equal-chip)
+             (check-eq? (chip-8-pc equal-chip) (+ load-address 4))
+
+             (define unequal-chip (make-chip-8))
+             (load-rom! unequal-chip (bytes #x5A #xB0))
+             (chip-8-reg-v-set! unequal-chip #xA #x42)
+             (chip-8-reg-v-set! unequal-chip #xB #x41)
+             (step unequal-chip)
+             (check-eq? (chip-8-pc unequal-chip) (+ load-address 2))
+
+             (define invalid-chip (make-chip-8))
+             (load-rom! invalid-chip (bytes #x5A #xB1))
+             (check-exn #rx"Unknown opcode"
+                        (lambda () (step invalid-chip))))
+
   (test-case "6XNN stores NN in register VX"
              (define chip (make-chip-8))
              (load-rom! chip (bytes #x6A #xCD))
@@ -301,6 +357,26 @@
              (step chip)
 
              (check-eq? (chip-8-reg-v-ref chip #xF) #x03))
+
+  (test-case "9XY0 skips only when VX does not equal VY"
+             (define equal-chip (make-chip-8))
+             (load-rom! equal-chip (bytes #x9A #xB0))
+             (chip-8-reg-v-set! equal-chip #xA #x42)
+             (chip-8-reg-v-set! equal-chip #xB #x42)
+             (step equal-chip)
+             (check-eq? (chip-8-pc equal-chip) (+ load-address 2))
+
+             (define unequal-chip (make-chip-8))
+             (load-rom! unequal-chip (bytes #x9A #xB0))
+             (chip-8-reg-v-set! unequal-chip #xA #x42)
+             (chip-8-reg-v-set! unequal-chip #xB #x41)
+             (step unequal-chip)
+             (check-eq? (chip-8-pc unequal-chip) (+ load-address 4))
+
+             (define invalid-chip (make-chip-8))
+             (load-rom! invalid-chip (bytes #x9A #xB1))
+             (check-exn #rx"Unknown opcode"
+                        (lambda () (step invalid-chip))))
 
   (test-case "ANNN stores NNN in register I"
              (define chip (make-chip-8))
