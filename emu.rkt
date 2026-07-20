@@ -127,11 +127,13 @@
     ; 00E0 Clear the screen
     [(list #x0 #x0 #xE #x0) (bytes-fill! (chip-8-framebuffer c) 0) (request-redraw)]
     ; 00EE Return from a subroutine
-    [(list #x0 #x0 #xE #xE) (error "[TODO] Opcode 0x00ee not implemented!")]
+    [(list #x0 #x0 #xE #xE) (set-chip-8-pc! c (chip-8-stack-pop! c))]
     ; 0NNN Execute machine language subroutine - unsupported by this emulator
     [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
     ; 1NNN Jump to address NNN
     [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
+    ; 2NNN Execute subroutine starting at address NNN
+    [(list #x2 _ _ _) (chip-8-stack-push! c (chip-8-pc c)) (set-chip-8-pc! c NNN)]
     ; 6XNN Store number NN in register VX
     [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
     ; 7XNN Add the value NN to register VX
@@ -253,6 +255,30 @@
              (step chip)
 
              (check-eq? (chip-8-pc chip) #xABC))
+
+  (test-case "2NNN calls a subroutine and 00EE returns"
+             (define chip (make-chip-8))
+             (load-rom! chip
+                        (bytes #x22 #x08 ; call subroutine at 0x208
+                               #x60 #xAA ; continuation: V0 = 0xAA
+                               #x00 #x00 ; unused padding
+                               #x00 #x00
+                               #x60 #xBB ; subroutine: V0 = 0xBB
+                               #x00 #xEE ; return
+                               ))
+
+             (step chip)
+             (check-eq? (chip-8-pc chip) #x208)
+             (check-eq? (chip-8-stack-peek chip) #x202)
+
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #x0) #xBB)
+             (step chip)
+             (check-eq? (chip-8-pc chip) #x202)
+             (check-eq? (chip-8-sp chip) 0)
+
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #x0) #xAA))
 
   (test-case "6XNN stores NN in register VX"
              (define chip (make-chip-8))
