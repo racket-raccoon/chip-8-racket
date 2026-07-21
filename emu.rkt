@@ -155,6 +155,13 @@
      (define old-val (chip-8-reg-v-ref c X))
      (define new-val (bitwise-and (+ old-val NN) #xFF))
      (chip-8-reg-v-set! c X new-val)]
+    ; 8XY4 Add the value of register VY to register VX
+    ;      Set VF to 01 if a carry occurs
+    ;      Set VF to 00 if a carry does not occur
+    [(list #x8 _ _ #x4)
+     (define sum (+ (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+     (chip-8-reg-v-set! c X (bitwise-and sum #xFF))
+     (chip-8-reg-v-set! c #xF (if (> sum #xFF) 1 0))]
     ; 9XY0 Skip the following instruction if the value of register VX is not equal to the value of register VY
     [(list #x9 _ _ #x0) (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
     ; ANNN Store memory address NNN in register I
@@ -370,6 +377,42 @@
              (step chip)
 
              (check-eq? (chip-8-reg-v-ref chip #xF) #x03))
+
+  (test-case "8XY4 adds VY to VX and reports carry in VF"
+             (define no-carry-chip (make-chip-8))
+             (load-rom! no-carry-chip (bytes #x8A #xB4))
+             (chip-8-reg-v-set! no-carry-chip #xA #x12)
+             (chip-8-reg-v-set! no-carry-chip #xB #x34)
+             (chip-8-reg-v-set! no-carry-chip #xF #x01)
+             (step no-carry-chip)
+             (check-eq? (chip-8-reg-v-ref no-carry-chip #xA) #x46)
+             (check-eq? (chip-8-reg-v-ref no-carry-chip #xF) #x00)
+
+             (define carry-chip (make-chip-8))
+             (load-rom! carry-chip (bytes #x8A #xB4))
+             (chip-8-reg-v-set! carry-chip #xA #xFE)
+             (chip-8-reg-v-set! carry-chip #xB #x05)
+             (step carry-chip)
+             (check-eq? (chip-8-reg-v-ref carry-chip #xA) #x03)
+             (check-eq? (chip-8-reg-v-ref carry-chip #xF) #x01))
+
+  (test-case "8XY4 handles VF as an operand"
+             (define x-is-vf-chip (make-chip-8))
+             (load-rom! x-is-vf-chip (bytes #x8F #xA4))
+             (chip-8-reg-v-set! x-is-vf-chip #xF #x02)
+             (chip-8-reg-v-set! x-is-vf-chip #xA #x03)
+             (step x-is-vf-chip)
+             ;; The flag written last wins over the sum stored in VX.
+             (check-eq? (chip-8-reg-v-ref x-is-vf-chip #xF) #x00)
+
+             (define y-is-vf-chip (make-chip-8))
+             (load-rom! y-is-vf-chip (bytes #x8A #xF4))
+             (chip-8-reg-v-set! y-is-vf-chip #xA #xFE)
+             (chip-8-reg-v-set! y-is-vf-chip #xF #x02)
+             (step y-is-vf-chip)
+             ;; The old value of VF participates in the addition.
+             (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xA) #x00)
+             (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xF) #x01))
 
   (test-case "9XY0 skips only when VX does not equal VY"
              (define equal-chip (make-chip-8))
