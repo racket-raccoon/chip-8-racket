@@ -2,12 +2,15 @@
 
 (provide make-chip-8
          load-rom!
+         tick!
          step
          chip-8-pixel-ref
          screen-width
          screen-height)
 
-(struct chip-8 (memory pc i reg-v stack sp framebuffer) #:transparent #:mutable)
+(struct chip-8
+  (memory pc i reg-v stack sp framebuffer delay-timer sound-timer)
+  #:transparent #:mutable)
 
 (define memory-size #x1000)
 (define stack-size 12)
@@ -50,6 +53,11 @@
    ;; top-left corner of the screen is assigned coordinates of (0x00, 0x00)
    ;; and the bottom-right is assigned (0x3F, 0x1F).
    (make-bytes (* screen-height screen-width))
+   ; Delay timer, both timers are one byte in size, and as long as their value
+   ; is above 0, they should be decremented by one 60 times per second (ie. at 60 Hz)
+   0
+   ; The sound timer makes computer “beep” as long as it’s above 0
+   0
    ))
 
 (define (chip-8-reg-v-ref c x) (bytes-ref (chip-8-reg-v c) x))
@@ -91,7 +99,9 @@
   (bytes-fill! (chip-8-reg-v c) 0)
   (vector-fill! (chip-8-stack c) 0)
   (set-chip-8-sp! c 0)
-  (bytes-fill! (chip-8-framebuffer c) 0))
+  (bytes-fill! (chip-8-framebuffer c) 0)
+  (set-chip-8-delay-timer! c 0)
+  (set-chip-8-sound-timer! c 0))
 
 (define (fetch-opcode c)
   (define mem (chip-8-memory c))
@@ -134,6 +144,15 @@
       (chip-8-pixel-set! c (+ x j) (+ y n) (bitwise-xor old #x1)))))
 
 (define (skip! c [n 1]) (set-chip-8-pc! c (+ (* 2 n) (chip-8-pc c))))
+
+(define (tick! c [beep void])
+  (define delay-timer (chip-8-delay-timer c))
+  (unless (zero? delay-timer)
+    (set-chip-8-delay-timer! c (sub1 delay-timer)))
+  (define sound-timer (chip-8-sound-timer c))
+  (when (positive? sound-timer) (beep))
+  (unless (zero? sound-timer)
+    (set-chip-8-sound-timer! c (sub1 sound-timer))))
 
 (define (step c [request-redraw void])
   ;; FETCH
@@ -214,6 +233,12 @@
     ;      starting at the address stored in I.  Set VF to 01 if any set
     ;      pixels are changed to unset, and 00 otherwise
     [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
+    ; FX07 Store the current value of the delay timer in register VX
+    [(list #xF _ #x0 #x7) (chip-8-reg-v-set! c X (chip-8-delay-timer c))]
+    ; FX15 Set the delay timer to the value of register VX
+    [(list #xF _ #x1 #x5) (set-chip-8-delay-timer! c (chip-8-reg-v-ref c X))]
+    ; FX18 Set the sound timer to the value of register VX
+    [(list #xF _ #x1 #x8) (set-chip-8-sound-timer! c (chip-8-reg-v-ref c X))]
     ; FX1E Add the value stored in register VX to register I
     [(list #xF _ #x1 #xE)
      (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
@@ -708,6 +733,49 @@
                             (* (sub1 screen-height) screen-width))
                          1)
              (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "FX07 stores the delay timer in VX"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x07))
+             (set-chip-8-delay-timer! chip #x42)
+
+             (step chip)
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x42))
+
+  (test-case "FX15 sets the delay timer from VX"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x15))
+             (chip-8-reg-v-set! chip #xA #x42)
+
+             (step chip)
+
+             (check-eq? (chip-8-delay-timer chip) #x42))
+
+  (test-case "FX18 sets the sound timer from VX"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x18))
+             (chip-8-reg-v-set! chip #xA #x42)
+
+             (step chip)
+
+             (check-eq? (chip-8-sound-timer chip) #x42))
+
+  (test-case "tick decrements active timers and requests a beep"
+             (define chip (make-chip-8))
+             (set-chip-8-delay-timer! chip 2)
+             (set-chip-8-sound-timer! chip 1)
+             (define beep-count 0)
+
+             (tick! chip (lambda () (set! beep-count (add1 beep-count))))
+             (check-eq? (chip-8-delay-timer chip) 1)
+             (check-eq? (chip-8-sound-timer chip) 0)
+             (check-eq? beep-count 1)
+
+             (tick! chip (lambda () (set! beep-count (add1 beep-count))))
+             (check-eq? (chip-8-delay-timer chip) 0)
+             (check-eq? (chip-8-sound-timer chip) 0)
+             (check-eq? beep-count 1))
 
   (test-case "FX1E adds VX to I without affecting VF"
              (define chip (make-chip-8))

@@ -11,7 +11,7 @@
        [height (* screen-height scale-factor)]))
 
 (define chip (make-chip-8))
-(define rom (file->bytes "roms/particle.ch8"))
+(define rom (file->bytes "roms/trip8.ch8"))
 (load-rom! chip rom)
 
 (define canvas
@@ -27,12 +27,18 @@
             (send dc draw-rectangle (* x scale-factor) (* y scale-factor)
                   scale-factor scale-factor)))]))
 
+(define ticks/second 60)
+(define opcodes/second 600)
+(define ms/tick (quotient 1000 ticks/second))
+
 (define timer
   (new timer%
        [notify-callback
         (λ ()
-          (step chip (λ () (send canvas refresh))))]))
+          (for ([i (in-range (quotient opcodes/second ticks/second))])
+            (step chip (λ () (send canvas refresh))))
+          (tick! chip bell))]))
 
 (send frame show #t)
 
-(send timer start 5)
+(send timer start ms/tick)
