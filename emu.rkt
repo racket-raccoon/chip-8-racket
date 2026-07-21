@@ -28,6 +28,9 @@
 ; Compatibility modes conventionally model this side effect by clearing VF;
 ; CHIP-48 and SUPER-CHIP instead leave VF unchanged.
 (define logic-ops-clear-vf? (make-parameter #t))
+; The original COSMAC VIP shifts VY and stores the result in VX for 8XY6 and
+; 8XYE. CHIP-48 and SUPER-CHIP instead shift VX in place and ignore VY.
+(define shifts-use-vy? (make-parameter #t))
 
 (define (make-chip-8)
   (chip-8
@@ -184,6 +187,23 @@
      (define sum (+ (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
      (chip-8-reg-v-set! c X (bitwise-and sum #xFF))
      (chip-8-reg-v-set! c #xF (if (> sum #xFF) 1 0))]
+    ; 8XY6 Store the value of register VY shifted right one bit in register VX.
+    ;      Set register VF to the least significant bit prior to the shift;
+    ;      VY is unchanged
+    [(list #x8 _ _ #x6)
+     (when (shifts-use-vy?) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y)))
+     (define vx (chip-8-reg-v-ref c X))
+     (define new-vf (bitwise-and vx 1))
+     (chip-8-reg-v-set! c X (arithmetic-shift vx -1))
+     (chip-8-reg-v-set! c #xF new-vf)]
+    ; 8XYE Shift VY left into VX, or shift VX in place in compatibility mode.
+    ;      Set VF to the most significant bit prior to the shift;
+    ;      VY is unchanged
+    [(list #x8 _ _ #xE)
+     (when (shifts-use-vy?) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y)))
+     (define shifted (arithmetic-shift (chip-8-reg-v-ref c X) 1))
+     (chip-8-reg-v-set! c X (bitwise-and shifted #xFF))
+     (chip-8-reg-v-set! c #xF (arithmetic-shift shifted -8))]
     ; 9XY0 Skip the following instruction if the value of register VX is not equal to the value of register VY
     [(list #x9 _ _ #x0) (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
     ; ANNN Store memory address NNN in register I
@@ -519,6 +539,58 @@
              ;; The old value of VF participates in the addition.
              (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xA) #x00)
              (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xF) #x01))
+
+  (test-case "8XY6 shifts VY into VX in original mode"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xB6))
+             (chip-8-reg-v-set! chip #xA #x82)
+             (chip-8-reg-v-set! chip #xB #x03)
+
+             (step chip)
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x01)
+             (check-eq? (chip-8-reg-v-ref chip #xB) #x03)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x01))
+
+  (test-case "8XY6 can shift VX in place and ignore VY"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xB6))
+             (chip-8-reg-v-set! chip #xA #x82)
+             (chip-8-reg-v-set! chip #xB #x03)
+             (chip-8-reg-v-set! chip #xF #x01)
+
+             (parameterize ([shifts-use-vy? #f])
+               (step chip))
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x41)
+             (check-eq? (chip-8-reg-v-ref chip #xB) #x03)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x00))
+
+  (test-case "8XYE shifts VY into VX in original mode"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xBE))
+             (chip-8-reg-v-set! chip #xA #x41)
+             (chip-8-reg-v-set! chip #xB #x81)
+
+             (step chip)
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x02)
+             (check-eq? (chip-8-reg-v-ref chip #xB) #x81)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x01))
+
+  (test-case "8XYE can shift VX in place and ignore VY"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xBE))
+             (chip-8-reg-v-set! chip #xA #x41)
+             (chip-8-reg-v-set! chip #xB #x80)
+             (chip-8-reg-v-set! chip #xF #x01)
+
+             (parameterize ([shifts-use-vy? #f])
+               (step chip))
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x82)
+             (check-eq? (chip-8-reg-v-ref chip #xB) #x80)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x00))
 
   (test-case "9XY0 skips only when VX does not equal VY"
              (define equal-chip (make-chip-8))
