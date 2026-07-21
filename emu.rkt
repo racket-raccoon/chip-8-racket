@@ -15,6 +15,8 @@
 (define memory-size #x1000)
 (define stack-size 12)
 (define load-address #x200)
+(define font-address #x050)
+(define font-size 5)
 (define screen-height 32)
 (define screen-width 64)
 
@@ -90,10 +92,33 @@
   (set-chip-8-sp! c (sub1 sp))
   top)
 
+
+(define default-font
+  (bytes
+   #xF0 #x90 #x90 #x90 #xF0 ; 0
+   #x20 #x60 #x20 #x20 #x70 ; 1
+   #xF0 #x10 #xF0 #x80 #xF0 ; 2
+   #xF0 #x10 #xF0 #x10 #xF0 ; 3
+   #x90 #x90 #xF0 #x10 #x10 ; 4
+   #xF0 #x80 #xF0 #x10 #xF0 ; 5
+   #xF0 #x80 #xF0 #x90 #xF0 ; 6
+   #xF0 #x10 #x20 #x40 #x40 ; 7
+   #xF0 #x90 #xF0 #x90 #xF0 ; 8
+   #xF0 #x90 #xF0 #x10 #xF0 ; 9
+   #xF0 #x90 #xF0 #x90 #x90 ; A
+   #xE0 #x90 #xE0 #x90 #xE0 ; B
+   #xF0 #x80 #x80 #x80 #xF0 ; C
+   #xE0 #x90 #x90 #x90 #xE0 ; D
+   #xF0 #x80 #xF0 #x80 #xF0 ; E
+   #xF0 #x80 #xF0 #x80 #x80 ; F
+   ))
+
 (define (load-rom! c rom)
   ; reset emulator state
-  (bytes-fill! (chip-8-memory c) 0)
-  (bytes-copy! (chip-8-memory c) load-address rom)
+  (define mem (chip-8-memory c))
+  (bytes-fill! mem 0)
+  (bytes-copy! mem load-address rom)
+  (bytes-copy! mem font-address default-font)
   (set-chip-8-pc! c load-address)
   (set-chip-8-i! c 0)
   (bytes-fill! (chip-8-reg-v c) 0)
@@ -244,6 +269,12 @@
      (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
      (set-chip-8-i! c new-i)
      (when (fx1e-sets-vf?) (chip-8-reg-v-set! c #xF (if (> new-i #xFFF) 1 0)))]
+    ; FX29 Set I to the memory address of the sprite data corresponding to
+    ;      the hexadecimal digit stored in register VX
+    [(list #xF _ #x2 #x9)
+     (set-chip-8-i! c
+                    (+ font-address
+                       (* font-size (chip-8-reg-v-ref c X))))]
     ; FX55 Store registers V0 through VX inclusive in memory starting at I.
     ;      Depending on compatibility mode, increment I by X + 1 afterward
     [(list #xF _ #x5 #x5)
@@ -324,7 +355,9 @@
     (check-eq? (chip-8-pc c) load-address)
     (define mem (chip-8-memory c))
     (define rom-len (bytes-length rom))
-    (check-equal? (subbytes mem 0 load-address) (make-bytes load-address))
+    (define interpreter-memory (make-bytes load-address))
+    (bytes-copy! interpreter-memory font-address default-font)
+    (check-equal? (subbytes mem 0 load-address) interpreter-memory)
     (check-equal? (subbytes mem load-address (+ load-address rom-len)) rom)
     (check-equal? (subbytes mem (+ load-address rom-len)) (make-bytes (- memory-size load-address rom-len))))
 
@@ -821,6 +854,22 @@
              ;; FF1E adds the old VF value (2) before VF becomes the flag (1).
              (check-eq? (chip-8-i overflow-chip) #x1001)
              (check-eq? (chip-8-reg-v-ref overflow-chip #xF) #x01))
+
+  (test-case "FX29 points I at the font sprite selected by VX"
+             (for ([digit '(#x0 #x7 #xF)])
+               (define chip (make-chip-8))
+               (load-rom! chip (bytes #xFA #x29))
+               (chip-8-reg-v-set! chip #xA digit)
+
+               (step chip)
+
+               (define offset (* font-size digit))
+               (check-eq? (chip-8-i chip) (+ font-address offset))
+               (check-equal?
+                (subbytes (chip-8-memory chip)
+                          (chip-8-i chip)
+                          (+ (chip-8-i chip) font-size))
+                (subbytes default-font offset (+ offset font-size)))))
 
   (test-case "FX55 stores V0 through VX and increments I"
              (define chip (make-chip-8))
