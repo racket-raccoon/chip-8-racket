@@ -219,6 +219,14 @@
      (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
      (set-chip-8-i! c new-i)
      (when (fx1e-sets-vf?) (chip-8-reg-v-set! c #xF (if (> new-i #xFFF) 1 0)))]
+    ; FX55 Store registers V0 through VX inclusive in memory starting at I.
+    ;      Depending on compatibility mode, increment I by X + 1 afterward
+    [(list #xF _ #x5 #x5)
+     (define mem (chip-8-memory c))
+     (define i (chip-8-i c))
+     (for ([j (in-inclusive-range 0 X)])
+       (bytes-set! mem (+ i j) (chip-8-reg-v-ref c j)))
+     (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
     ; FX65 Fill registers V0 to VX inclusive with the values stored in memory
     ;      starting at address I. Depending on compatibility mode, increment I
     ;      by X + 1 after the operation
@@ -745,6 +753,39 @@
              ;; FF1E adds the old VF value (2) before VF becomes the flag (1).
              (check-eq? (chip-8-i overflow-chip) #x1001)
              (check-eq? (chip-8-reg-v-ref overflow-chip #xF) #x01))
+
+  (test-case "FX55 stores V0 through VX and increments I"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x55))
+             (set-chip-8-i! chip #x300)
+             (bytes-copy! (chip-8-reg-v chip) 0
+                          (bytes #x10 #x20 #x30 #x40 #x50 #x60
+                                 #x70 #x80 #x90 #xA0 #xB0))
+             (bytes-set! (chip-8-memory chip) #x30B #xEE)
+
+             (step chip)
+
+             (check-equal? (subbytes (chip-8-memory chip) #x300 #x30C)
+                           (bytes #x10 #x20 #x30 #x40
+                                  #x50 #x60 #x70 #x80
+                                  #x90 #xA0 #xB0 #xEE))
+             (check-eq? (chip-8-i chip) #x30B))
+
+  (test-case "FX55 can leave I unchanged"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xF2 #x55))
+             (set-chip-8-i! chip #x300)
+             (chip-8-reg-v-set! chip #x0 #x12)
+             (chip-8-reg-v-set! chip #x1 #x34)
+             (chip-8-reg-v-set! chip #x2 #x56)
+             (bytes-set! (chip-8-memory chip) #x303 #xEE)
+
+             (parameterize ([load-store-increments-i? #f])
+               (step chip))
+
+             (check-equal? (subbytes (chip-8-memory chip) #x300 #x304)
+                           (bytes #x12 #x34 #x56 #xEE))
+             (check-eq? (chip-8-i chip) #x300))
 
   (test-case "FX65 loads V0 through VX and increments I"
              (define chip (make-chip-8))

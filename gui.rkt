@@ -11,7 +11,7 @@
        [height (* screen-height scale-factor)]))
 
 (define chip (make-chip-8))
-(define rom (file->bytes "roms/maze.ch8"))
+(define rom (file->bytes "roms/particle.ch8"))
 (load-rom! chip rom)
 
 (define canvas
@@ -35,4 +35,4 @@
 
 (send frame show #t)
 
-(send timer start 10)
+(send timer start 5)
