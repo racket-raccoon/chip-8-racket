@@ -15,6 +15,12 @@
 (define screen-height 32)
 (define screen-width 64)
 
+;; ambiguous instructions!
+; The original COSMAC VIP allows I to exceed 0xFFF and leaves VF unchanged.
+; Some later interpreters set VF on overflow: CHIP-8 interpreter for Amiga
+; behaved this way. At least one known game, Spacefight 2091!, relies on it
+(define fx1e-sets-vf? (make-parameter #f))
+
 (define (make-chip-8)
   (chip-8
    ;; 4096 (0x1000) memory locations, all of which are 8 bits
@@ -159,6 +165,11 @@
     ;      starting at the address stored in I.  Set VF to 01 if any set
     ;      pixels are changed to unset, and 00 otherwise
     [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
+    ; FX1E Add the value stored in register VX to register I
+    [(list #xF _ #x1 #xE)
+     (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
+     (set-chip-8-i! c new-i)
+     (when (fx1e-sets-vf?) (chip-8-reg-v-set! c #xF (if (> new-i #xFFF) 1 0)))]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   )
 
@@ -468,4 +479,49 @@
                             (* (sub1 screen-height) screen-width))
                          1)
              (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "FX1E adds VX to I without affecting VF"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x1E))
+             (set-chip-8-i! chip #xABC)
+             (chip-8-reg-v-set! chip #xA #x10)
+             (chip-8-reg-v-set! chip #xF #x7B)
+
+             (step chip)
+
+             (check-eq? (chip-8-i chip) #xACC)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x7B)
+
+             (define overflow-chip (make-chip-8))
+             (load-rom! overflow-chip (bytes #xFA #x1E))
+             (set-chip-8-i! overflow-chip #xFFF)
+             (chip-8-reg-v-set! overflow-chip #xA #x01)
+             (chip-8-reg-v-set! overflow-chip #xF #x7B)
+
+             (step overflow-chip)
+
+             (check-eq? (chip-8-i overflow-chip) #x1000)
+             (check-eq? (chip-8-reg-v-ref overflow-chip #xF) #x7B))
+
+  (test-case "FX1E optionally sets VF on address-range overflow"
+             (define no-overflow-chip (make-chip-8))
+             (load-rom! no-overflow-chip (bytes #xFA #x1E))
+             (set-chip-8-i! no-overflow-chip #x100)
+             (chip-8-reg-v-set! no-overflow-chip #xA #x10)
+             (chip-8-reg-v-set! no-overflow-chip #xF #x7B)
+
+             (define overflow-chip (make-chip-8))
+             (load-rom! overflow-chip (bytes #xFF #x1E))
+             (set-chip-8-i! overflow-chip #xFFF)
+             (chip-8-reg-v-set! overflow-chip #xF #x02)
+
+             (parameterize ([fx1e-sets-vf? #t])
+               (step no-overflow-chip)
+               (step overflow-chip))
+
+             (check-eq? (chip-8-i no-overflow-chip) #x110)
+             (check-eq? (chip-8-reg-v-ref no-overflow-chip #xF) #x00)
+             ;; FF1E adds the old VF value (2) before VF becomes the flag (1).
+             (check-eq? (chip-8-i overflow-chip) #x1001)
+             (check-eq? (chip-8-reg-v-ref overflow-chip #xF) #x01))
   )
