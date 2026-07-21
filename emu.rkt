@@ -20,6 +20,9 @@
 ; Some later interpreters set VF on overflow: CHIP-8 interpreter for Amiga
 ; behaved this way. At least one known game, Spacefight 2091!, relies on it
 (define fx1e-sets-vf? (make-parameter #f))
+; The original COSMAC VIP increments I by X + 1 after FX55 and FX65.
+; CHIP-48 and SUPER-CHIP leave I unchanged. Default to the original behavior.
+(define load-store-increments-i? (make-parameter #t))
 
 (define (make-chip-8)
   (chip-8
@@ -155,6 +158,8 @@
      (define old-val (chip-8-reg-v-ref c X))
      (define new-val (bitwise-and (+ old-val NN) #xFF))
      (chip-8-reg-v-set! c X new-val)]
+    ; 8XY0 Store the value of register VY in register VX
+    [(list #x8 _ _ #x0) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y))]
     ; 8XY4 Add the value of register VY to register VX
     ;      Set VF to 01 if a carry occurs
     ;      Set VF to 00 if a carry does not occur
@@ -177,6 +182,15 @@
      (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
      (set-chip-8-i! c new-i)
      (when (fx1e-sets-vf?) (chip-8-reg-v-set! c #xF (if (> new-i #xFFF) 1 0)))]
+    ; FX65 Fill registers V0 to VX inclusive with the values stored in memory
+    ;      starting at address I. Depending on compatibility mode, increment I
+    ;      by X + 1 after the operation
+    [(list #xF _ #x6 #x5)
+     (define mem (chip-8-memory c))
+     (define i (chip-8-i c))
+     (for ([j (in-inclusive-range 0 X)])
+       (chip-8-reg-v-set! c j (bytes-ref mem (+ i j))))
+     (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   )
 
@@ -378,6 +392,31 @@
 
              (check-eq? (chip-8-reg-v-ref chip #xF) #x03))
 
+  (test-case "8XY0 copies VY into VX"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xB0))
+             (chip-8-reg-v-set! chip #xA #x12)
+             (chip-8-reg-v-set! chip #xB #xCD)
+
+             (step chip)
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #xCD)
+             (check-eq? (chip-8-reg-v-ref chip #xB) #xCD))
+
+  (test-case "8XY0 treats VF as an ordinary register"
+             (define to-vf-chip (make-chip-8))
+             (load-rom! to-vf-chip (bytes #x8F #xA0))
+             (chip-8-reg-v-set! to-vf-chip #xA #x42)
+             (step to-vf-chip)
+             (check-eq? (chip-8-reg-v-ref to-vf-chip #xF) #x42)
+
+             (define from-vf-chip (make-chip-8))
+             (load-rom! from-vf-chip (bytes #x8A #xF0))
+             (chip-8-reg-v-set! from-vf-chip #xF #x42)
+             (step from-vf-chip)
+             (check-eq? (chip-8-reg-v-ref from-vf-chip #xA) #x42)
+             (check-eq? (chip-8-reg-v-ref from-vf-chip #xF) #x42))
+
   (test-case "8XY4 adds VY to VX and reports carry in VF"
              (define no-carry-chip (make-chip-8))
              (load-rom! no-carry-chip (bytes #x8A #xB4))
@@ -567,4 +606,39 @@
              ;; FF1E adds the old VF value (2) before VF becomes the flag (1).
              (check-eq? (chip-8-i overflow-chip) #x1001)
              (check-eq? (chip-8-reg-v-ref overflow-chip #xF) #x01))
+
+  (test-case "FX65 loads V0 through VX and increments I"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x65))
+             (set-chip-8-i! chip #x300)
+             (bytes-fill! (chip-8-reg-v chip) #xEE)
+             (bytes-copy! (chip-8-memory chip) #x300
+                          (bytes #x10 #x20 #x30 #x40 #x50 #x60
+                                 #x70 #x80 #x90 #xA0 #xB0))
+
+             (step chip)
+
+             (check-equal? (chip-8-reg-v chip)
+                           (bytes #x10 #x20 #x30 #x40
+                                  #x50 #x60 #x70 #x80
+                                  #x90 #xA0 #xB0 #xEE
+                                  #xEE #xEE #xEE #xEE))
+             (check-eq? (chip-8-i chip) #x30B))
+
+  (test-case "FX65 can leave I unchanged"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xF2 #x65))
+             (set-chip-8-i! chip #x300)
+             (chip-8-reg-v-set! chip #x3 #xEE)
+             (bytes-copy! (chip-8-memory chip) #x300
+                          (bytes #x12 #x34 #x56))
+
+             (parameterize ([load-store-increments-i? #f])
+               (step chip))
+
+             (check-eq? (chip-8-reg-v-ref chip #x0) #x12)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x34)
+             (check-eq? (chip-8-reg-v-ref chip #x2) #x56)
+             (check-eq? (chip-8-reg-v-ref chip #x3) #xEE)
+             (check-eq? (chip-8-i chip) #x300))
   )
