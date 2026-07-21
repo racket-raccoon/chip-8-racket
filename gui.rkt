@@ -35,8 +35,10 @@
   (new timer%
        [notify-callback
         (λ ()
+          (define refresh-requested? #f)
           (for ([i (in-range (quotient opcodes/second ticks/second))])
-            (step chip (λ () (send canvas refresh))))
+            (step chip (λ () (set! refresh-requested? #t))))
+          (when refresh-requested? (send canvas refresh-now))
           (tick! chip bell))]))
 
 (send frame show #t)
