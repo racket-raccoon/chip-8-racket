@@ -23,6 +23,11 @@
 ; The original COSMAC VIP increments I by X + 1 after FX55 and FX65.
 ; CHIP-48 and SUPER-CHIP leave I unchanged. Default to the original behavior.
 (define load-store-increments-i? (make-parameter #t))
+; The original COSMAC VIP overwrites VF after 8XY1, 8XY2, and 8XY3 with
+; the 1802's DF flag, whose value is unrelated to these logical operations.
+; Compatibility modes conventionally model this side effect by clearing VF;
+; CHIP-48 and SUPER-CHIP instead leave VF unchanged.
+(define logic-ops-clear-vf? (make-parameter #t))
 
 (define (make-chip-8)
   (chip-8
@@ -160,6 +165,18 @@
      (chip-8-reg-v-set! c X new-val)]
     ; 8XY0 Store the value of register VY in register VX
     [(list #x8 _ _ #x0) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y))]
+    ; 8XY1 Set VX to VX OR VY
+    [(list #x8 _ _ #x1)
+     (chip-8-reg-v-set! c X (bitwise-ior (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+     (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
+    ; 8XY2 Set VX to VX AND VY
+    [(list #x8 _ _ #x2)
+     (chip-8-reg-v-set! c X (bitwise-and (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+     (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
+    ; 8XY3 Set VX to VX XOR VY
+    [(list #x8 _ _ #x3)
+     (chip-8-reg-v-set! c X (bitwise-xor (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+     (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
     ; 8XY4 Add the value of register VY to register VX
     ;      Set VF to 01 if a carry occurs
     ;      Set VF to 00 if a carry does not occur
@@ -416,6 +433,56 @@
              (step from-vf-chip)
              (check-eq? (chip-8-reg-v-ref from-vf-chip #xA) #x42)
              (check-eq? (chip-8-reg-v-ref from-vf-chip #xF) #x42))
+
+  (test-case "8XY1, 8XY2, and 8XY3 perform logical operations and clear VF"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xB1
+                                    #x8C #xD2
+                                    #x8E #x93))
+             (chip-8-reg-v-set! chip #xA #xA0)
+             (chip-8-reg-v-set! chip #xB #x0F)
+             (chip-8-reg-v-set! chip #xC #xF3)
+             (chip-8-reg-v-set! chip #xD #x3C)
+             (chip-8-reg-v-set! chip #xE #xAA)
+             (chip-8-reg-v-set! chip #x9 #x0F)
+
+             (chip-8-reg-v-set! chip #xF #x01)
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #xA) #xAF)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x00)
+
+             (chip-8-reg-v-set! chip #xF #x01)
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #xC) #x30)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x00)
+
+             (chip-8-reg-v-set! chip #xF #x01)
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #xE) #xA5)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x00))
+
+  (test-case "Logical operations can leave VF unchanged"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x8A #xB1
+                                    #x8C #xD2
+                                    #x8E #x93))
+             (chip-8-reg-v-set! chip #xA #xA0)
+             (chip-8-reg-v-set! chip #xB #x0F)
+             (chip-8-reg-v-set! chip #xC #xF3)
+             (chip-8-reg-v-set! chip #xD #x3C)
+             (chip-8-reg-v-set! chip #xE #xAA)
+             (chip-8-reg-v-set! chip #x9 #x0F)
+             (chip-8-reg-v-set! chip #xF #x7B)
+
+             (parameterize ([logic-ops-clear-vf? #f])
+               (step chip)
+               (step chip)
+               (step chip))
+
+             (check-eq? (chip-8-reg-v-ref chip #xA) #xAF)
+             (check-eq? (chip-8-reg-v-ref chip #xC) #x30)
+             (check-eq? (chip-8-reg-v-ref chip #xE) #xA5)
+             (check-eq? (chip-8-reg-v-ref chip #xF) #x7B))
 
   (test-case "8XY4 adds VY to VX and reports carry in VF"
              (define no-carry-chip (make-chip-8))
