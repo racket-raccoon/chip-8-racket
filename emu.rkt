@@ -6,7 +6,12 @@
          step
          chip-8-pixel-ref
          screen-width
-         screen-height)
+         screen-height
+         fx1e-sets-vf?
+         load-store-increments-i?
+         logic-ops-clear-vf?
+         shifts-use-vy?
+         jump-uses-vx?)
 
 (struct chip-8
   (memory pc i reg-v stack sp framebuffer delay-timer sound-timer)
@@ -36,6 +41,9 @@
 ; The original COSMAC VIP shifts VY and stores the result in VX for 8XY6 and
 ; 8XYE. CHIP-48 and SUPER-CHIP instead shift VX in place and ignore VY.
 (define shifts-use-vy? (make-parameter #t))
+; The original COSMAC VIP jumps to NNN plus V0 for BNNN. CHIP-48 and
+; SUPER-CHIP instead use the register selected by X, treating it as BXNN.
+(define jump-uses-vx? (make-parameter #f))
 
 (define (make-chip-8)
   (chip-8
@@ -252,6 +260,9 @@
     [(list #x9 _ _ #x0) (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
     ; ANNN Store memory address NNN in register I
     [(list #xA _ _ _) (set-chip-8-i! c NNN)]
+    ; BNNN Jump to address NNN + V0, or NNN + VX in compatibility mode
+    [(list #xB _ _ _)
+     (set-chip-8-pc! c (+ NNN (chip-8-reg-v-ref c (if (jump-uses-vx?) X #x0))))]
     ; CXNN Set VX to a random number with a mask of NN
     [(list #xC _ _ _) (chip-8-reg-v-set! c X (bitwise-and (random #x100) NN))]
     ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
@@ -685,6 +696,27 @@
              (step chip)
 
              (check-eq? (chip-8-i chip) #xBCD))
+
+  (test-case "BNNN jumps to NNN plus V0 in original mode"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xB2 #x20))
+             (chip-8-reg-v-set! chip #x0 #x04)
+             (chip-8-reg-v-set! chip #x2 #x10)
+
+             (step chip)
+
+             (check-eq? (chip-8-pc chip) #x224))
+
+  (test-case "BNNN can jump to NNN plus VX in compatibility mode"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xB2 #x20))
+             (chip-8-reg-v-set! chip #x0 #x04)
+             (chip-8-reg-v-set! chip #x2 #x10)
+
+             (parameterize ([jump-uses-vx? #t])
+               (step chip))
+
+             (check-eq? (chip-8-pc chip) #x230))
 
   (test-case "CXNN stores a masked random byte in VX"
              (define chip (make-chip-8))
