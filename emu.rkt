@@ -107,6 +107,9 @@
   (set-chip-8-sp! c (sub1 sp))
   top)
 
+(define (chip-8-key-held? c n)
+  (vector-ref (chip-8-keypad c) n))
+
 (define (chip-8-key-pressed! c n)
   (define keypad (chip-8-keypad c))
   (unless (chip-8-pending-keypress c)
@@ -288,6 +291,14 @@
     ;      starting at the address stored in I.  Set VF to 01 if any set
     ;      pixels are changed to unset, and 00 otherwise
     [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
+    ; EX9E Skip the following instruction if the key corresponding to the hex value
+    ;      currently stored in register VX is pressed
+    [(list #xE _ #x9 #xE)
+     (when (chip-8-key-held? c (chip-8-reg-v-ref c X)) (skip! c))]
+    ; EXA1 Skip the following instruction if the key corresponding to the hex value
+    ;      currently stored in register VX is not pressed
+    [(list #xE _ #xA #x1)
+     (unless (chip-8-key-held? c (chip-8-reg-v-ref c X)) (skip! c))]
     ; FX07 Store the current value of the delay timer in register VX
     [(list #xF _ #x0 #x7) (chip-8-reg-v-set! c X (chip-8-delay-timer c))]
     ; FX0A Wait for a keypress and store the result in register VX
@@ -831,6 +842,34 @@
                             (* (sub1 screen-height) screen-width))
                          1)
              (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "EX9E skips only when the key in VX is held"
+             (define held-chip (make-chip-8))
+             (load-rom! held-chip (bytes #xEA #x9E))
+             (chip-8-reg-v-set! held-chip #xA #x5)
+             (chip-8-key-pressed! held-chip #x5)
+             (step held-chip)
+             (check-eq? (chip-8-pc held-chip) (+ load-address 4))
+
+             (define released-chip (make-chip-8))
+             (load-rom! released-chip (bytes #xEA #x9E))
+             (chip-8-reg-v-set! released-chip #xA #x5)
+             (step released-chip)
+             (check-eq? (chip-8-pc released-chip) (+ load-address 2)))
+
+  (test-case "EXA1 skips only when the key in VX is not held"
+             (define held-chip (make-chip-8))
+             (load-rom! held-chip (bytes #xEA #xA1))
+             (chip-8-reg-v-set! held-chip #xA #x5)
+             (chip-8-key-pressed! held-chip #x5)
+             (step held-chip)
+             (check-eq? (chip-8-pc held-chip) (+ load-address 2))
+
+             (define released-chip (make-chip-8))
+             (load-rom! released-chip (bytes #xEA #xA1))
+             (chip-8-reg-v-set! released-chip #xA #x5)
+             (step released-chip)
+             (check-eq? (chip-8-pc released-chip) (+ load-address 4)))
 
   (test-case "FX0A waits at the same instruction when no key was pressed"
              (define chip (make-chip-8))
