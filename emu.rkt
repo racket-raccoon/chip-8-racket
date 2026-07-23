@@ -5,6 +5,8 @@
          tick!
          step
          chip-8-pixel-ref
+         chip-8-key-pressed!
+         chip-8-key-released!
          screen-width
          screen-height
          fx1e-sets-vf?
@@ -14,7 +16,8 @@
          jump-uses-vx?)
 
 (struct chip-8
-  (memory pc i reg-v stack sp framebuffer delay-timer sound-timer)
+  (memory pc i reg-v stack sp framebuffer delay-timer sound-timer keypad
+          pending-keypress)
   #:transparent #:mutable)
 
 (define memory-size #x1000)
@@ -68,6 +71,10 @@
    0
    ; The sound timer makes computer “beep” as long as it’s above 0
    0
+   ; 16-button keypad, boolean vector representing if button is down
+   (make-vector 16 #f)
+   ; first key pressed transition since the last instruction
+   #f
    ))
 
 (define (chip-8-reg-v-ref c x) (bytes-ref (chip-8-reg-v c) x))
@@ -100,6 +107,16 @@
   (set-chip-8-sp! c (sub1 sp))
   top)
 
+(define (chip-8-key-pressed! c n)
+  (define keypad (chip-8-keypad c))
+  (unless (chip-8-pending-keypress c)
+    (unless (vector-ref keypad n) ; #f -> #t transition
+      (set-chip-8-pending-keypress! c n)))
+  (vector-set! keypad n #t))
+
+(define (chip-8-key-released! c n)
+  (define keypad (chip-8-keypad c))
+  (vector-set! keypad n #f))
 
 (define default-font
   (bytes
@@ -134,7 +151,9 @@
   (set-chip-8-sp! c 0)
   (bytes-fill! (chip-8-framebuffer c) 0)
   (set-chip-8-delay-timer! c 0)
-  (set-chip-8-sound-timer! c 0))
+  (set-chip-8-sound-timer! c 0)
+  (vector-fill! (chip-8-keypad c) #f)
+  (set-chip-8-pending-keypress! c #f))
 
 (define (fetch-opcode c)
   (define mem (chip-8-memory c))
@@ -271,6 +290,10 @@
     [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
     ; FX07 Store the current value of the delay timer in register VX
     [(list #xF _ #x0 #x7) (chip-8-reg-v-set! c X (chip-8-delay-timer c))]
+    ; FX0A Wait for a keypress and store the result in register VX
+    [(list #xF _ #x0 #xA)
+     (define key (chip-8-pending-keypress c))
+     (if key (chip-8-reg-v-set! c X key) (skip! c -1))]
     ; FX15 Set the delay timer to the value of register VX
     [(list #xF _ #x1 #x5) (set-chip-8-delay-timer! c (chip-8-reg-v-ref c X))]
     ; FX18 Set the sound timer to the value of register VX
@@ -304,7 +327,8 @@
        (chip-8-reg-v-set! c j (bytes-ref mem (+ i j))))
      (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
     [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
-  )
+  ;; FX0A consumes a pending keypress; every other instruction discards it.
+  (set-chip-8-pending-keypress! c #f))
 
 (define test-rom
   (bytes #x00 #xE0 ; clear screen
@@ -798,6 +822,75 @@
                             (* (sub1 screen-height) screen-width))
                          1)
              (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "FX0A waits at the same instruction when no key was pressed"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x0A))
+             (chip-8-reg-v-set! chip #xA #x42)
+
+             (step chip)
+
+             (check-eq? (chip-8-pc chip) load-address)
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x42))
+
+  (test-case "FX0A stores a newly pressed key and continues"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x0A))
+             (chip-8-key-pressed! chip #xB)
+
+             (step chip)
+
+             (check-eq? (chip-8-pc chip) (+ load-address 2))
+             (check-eq? (chip-8-reg-v-ref chip #xA) #xB)
+             (check-false (chip-8-pending-keypress chip)))
+
+  (test-case "FX0A accepts CHIP-8 key zero"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x0A))
+             (chip-8-key-pressed! chip #x0)
+
+             (step chip)
+
+             (check-eq? (chip-8-pc chip) (+ load-address 2))
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x0))
+
+  (test-case "A held key's auto-repeat does not create another keypress"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xF1 #x0A
+                                    #xF2 #x0A))
+             (chip-8-key-pressed! chip #x5)
+             (step chip)
+
+             (chip-8-key-pressed! chip #x5)
+             (check-false (chip-8-pending-keypress chip))
+             (step chip)
+
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x5)
+             (check-eq? (chip-8-pc chip) (+ load-address 2)))
+
+  (test-case "A key release does not satisfy FX0A"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x60 #x00
+                                    #xF1 #x0A))
+             (chip-8-key-pressed! chip #x5)
+             (step chip) ; discard the press before FX0A starts waiting
+             (chip-8-key-released! chip #x5)
+
+             (step chip)
+
+             (check-eq? (chip-8-pc chip) (+ load-address 2))
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x0))
+
+  (test-case "load-rom resets held keys and pending keypresses"
+             (define chip (make-chip-8))
+             (load-rom! chip minimal-rom)
+             (chip-8-key-pressed! chip #x0)
+             (chip-8-key-pressed! chip #x5)
+
+             (load-rom! chip minimal-rom)
+
+             (check-equal? (chip-8-keypad chip) (make-vector 16 #f))
+             (check-false (chip-8-pending-keypress chip)))
 
   (test-case "FX07 stores the delay timer in VX"
              (define chip (make-chip-8))
