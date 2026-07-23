@@ -261,6 +261,13 @@
      (define sum (+ (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
      (chip-8-reg-v-set! c X (bitwise-and sum #xFF))
      (chip-8-reg-v-set! c #xF (if (> sum #xFF) 1 0))]
+    ; 8XY5 Subtract the value of register VY from register VX
+    ;      Set VF to 00 if a borrow occurs
+    ;      Set VF to 01 if a borrow does not occur
+    [(list #x8 _ _ #x5)
+     (define diff (- (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+     (chip-8-reg-v-set! c X (bitwise-and diff #xFF))
+     (chip-8-reg-v-set! c #xF (if (negative? diff) 0 1))]
     ; 8XY6 Store the value of register VY shifted right one bit in register VX.
     ;      Set register VF to the least significant bit prior to the shift;
     ;      VY is unchanged
@@ -270,6 +277,13 @@
      (define new-vf (bitwise-and vx 1))
      (chip-8-reg-v-set! c X (arithmetic-shift vx -1))
      (chip-8-reg-v-set! c #xF new-vf)]
+    ; 8XY7 Set register VX to the value of VY minus VX
+    ;      Set VF to 00 if a borrow occurs
+    ;      Set VF to 01 if a borrow does not occur
+    [(list #x8 _ _ #x7)
+     (define diff (- (chip-8-reg-v-ref c Y) (chip-8-reg-v-ref c X)))
+     (chip-8-reg-v-set! c X (bitwise-and diff #xFF))
+     (chip-8-reg-v-set! c #xF (if (negative? diff) 0 1))]
     ; 8XYE Shift VY left into VX, or shift VX in place in compatibility mode.
     ;      Set VF to the most significant bit prior to the shift;
     ;      VY is unchanged
@@ -660,6 +674,74 @@
              ;; The old value of VF participates in the addition.
              (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xA) #x00)
              (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xF) #x01))
+
+  (test-case "8XY5 subtracts VY from VX and reports borrow in VF"
+             (define no-borrow-chip (make-chip-8))
+             (load-rom! no-borrow-chip (bytes #x8A #xB5))
+             (chip-8-reg-v-set! no-borrow-chip #xA #x34)
+             (chip-8-reg-v-set! no-borrow-chip #xB #x12)
+             (step no-borrow-chip)
+             (check-eq? (chip-8-reg-v-ref no-borrow-chip #xA) #x22)
+             (check-eq? (chip-8-reg-v-ref no-borrow-chip #xF) #x01)
+
+             (define borrow-chip (make-chip-8))
+             (load-rom! borrow-chip (bytes #x8A #xB5))
+             (chip-8-reg-v-set! borrow-chip #xA #x03)
+             (chip-8-reg-v-set! borrow-chip #xB #x05)
+             (step borrow-chip)
+             (check-eq? (chip-8-reg-v-ref borrow-chip #xA) #xFE)
+             (check-eq? (chip-8-reg-v-ref borrow-chip #xF) #x00)
+
+             (define equal-chip (make-chip-8))
+             (load-rom! equal-chip (bytes #x8A #xB5))
+             (chip-8-reg-v-set! equal-chip #xA #x42)
+             (chip-8-reg-v-set! equal-chip #xB #x42)
+             (step equal-chip)
+             (check-eq? (chip-8-reg-v-ref equal-chip #xA) #x00)
+             (check-eq? (chip-8-reg-v-ref equal-chip #xF) #x01))
+
+  (test-case "8XY5 handles VF as an operand"
+             (define x-is-vf-chip (make-chip-8))
+             (load-rom! x-is-vf-chip (bytes #x8F #xA5))
+             (chip-8-reg-v-set! x-is-vf-chip #xF #x02)
+             (chip-8-reg-v-set! x-is-vf-chip #xA #x03)
+             (step x-is-vf-chip)
+             ;; The flag written last wins over the difference stored in VX.
+             (check-eq? (chip-8-reg-v-ref x-is-vf-chip #xF) #x00)
+
+             (define y-is-vf-chip (make-chip-8))
+             (load-rom! y-is-vf-chip (bytes #x8A #xF5))
+             (chip-8-reg-v-set! y-is-vf-chip #xA #x05)
+             (chip-8-reg-v-set! y-is-vf-chip #xF #x03)
+             (step y-is-vf-chip)
+             ;; The old value of VF participates in the subtraction.
+             (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xA) #x02)
+             (check-eq? (chip-8-reg-v-ref y-is-vf-chip #xF) #x01))
+
+  (test-case "8XY7 subtracts VX from VY and reports borrow in VF"
+             (define no-borrow-chip (make-chip-8))
+             (load-rom! no-borrow-chip (bytes #x8A #xB7))
+             (chip-8-reg-v-set! no-borrow-chip #xA #x12)
+             (chip-8-reg-v-set! no-borrow-chip #xB #x34)
+             (step no-borrow-chip)
+             (check-eq? (chip-8-reg-v-ref no-borrow-chip #xA) #x22)
+             (check-eq? (chip-8-reg-v-ref no-borrow-chip #xF) #x01)
+
+             (define borrow-chip (make-chip-8))
+             (load-rom! borrow-chip (bytes #x8A #xB7))
+             (chip-8-reg-v-set! borrow-chip #xA #x05)
+             (chip-8-reg-v-set! borrow-chip #xB #x03)
+             (step borrow-chip)
+             (check-eq? (chip-8-reg-v-ref borrow-chip #xA) #xFE)
+             (check-eq? (chip-8-reg-v-ref borrow-chip #xF) #x00)
+
+             (define equal-chip (make-chip-8))
+             (load-rom! equal-chip (bytes #x8A #xB7))
+             (chip-8-reg-v-set! equal-chip #xA #x42)
+             (chip-8-reg-v-set! equal-chip #xB #x42)
+             (step equal-chip)
+             (check-eq? (chip-8-reg-v-ref equal-chip #xA) #x00)
+             (check-eq? (chip-8-reg-v-ref equal-chip #xF) #x01))
 
   (test-case "8XY6 shifts VY into VX in original mode"
              (define chip (make-chip-8))
