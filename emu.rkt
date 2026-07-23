@@ -309,6 +309,15 @@
      (set-chip-8-i! c
                     (+ font-address
                        (* font-size (chip-8-reg-v-ref c X))))]
+    ; FX33 Store the binary-coded decimal equivalent of the value stored in
+    ;      register VX at addresses I, I + 1, and I + 2
+    [(list #xF _ #x3 #x3)
+     (define mem (chip-8-memory c))
+     (define i (chip-8-i c))
+     (define vx (chip-8-reg-v-ref c X))
+     (for ([j (in-naturals)][k (in-list '(2 1 0))])
+       (define power (expt 10 j))
+       (bytes-set! mem (+ i k) (remainder (quotient vx power) 10)))]
     ; FX55 Store registers V0 through VX inclusive in memory starting at I.
     ;      Depending on compatibility mode, increment I by X + 1 afterward
     [(list #xF _ #x5 #x5)
@@ -995,6 +1004,21 @@
                           (chip-8-i chip)
                           (+ (chip-8-i chip) font-size))
                 (subbytes default-font offset (+ offset font-size)))))
+
+  (test-case "FX33 stores the decimal digits of VX at I"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x33))
+             (set-chip-8-i! chip #x300)
+             (chip-8-reg-v-set! chip #xA 156)
+             (bytes-copy! (chip-8-memory chip) #x2FF
+                          (bytes #xEE #xEE #xEE #xEE #xEE))
+
+             (step chip)
+
+             (check-equal? (subbytes (chip-8-memory chip) #x2FF #x304)
+                           (bytes #xEE 1 5 6 #xEE))
+             (check-eq? (chip-8-i chip) #x300)
+             (check-eq? (chip-8-reg-v-ref chip #xA) 156))
 
   (test-case "FX55 stores V0 through VX and increments I"
              (define chip (make-chip-8))
