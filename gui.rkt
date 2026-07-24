@@ -34,8 +34,7 @@
        [stretchable-height #f]))
 
 (define menu-bar
-  (new menu-bar%
-       [parent frame]))
+  (new menu-bar% [parent frame]))
 
 (define file-menu
   (new menu%
@@ -72,7 +71,8 @@
     (super-new)))
 
 (define canvas
-  (new chip-8-canvas% [parent frame]
+  (new chip-8-canvas%
+       [parent frame]
        [paint-callback
         (λ (canvas dc)
           (send dc set-background "blue")
@@ -81,7 +81,8 @@
           (for* ([y (in-range screen-height)]
                  [x (in-range screen-width)]
                  #:unless (zero? (chip-8-pixel-ref chip x y)))
-            (send dc draw-rectangle (* x scale-factor) (* y scale-factor)
+            (send dc draw-rectangle
+                  (* x scale-factor) (* y scale-factor)
                   scale-factor scale-factor)))]))
 
 (send canvas min-client-width (* screen-width scale-factor))

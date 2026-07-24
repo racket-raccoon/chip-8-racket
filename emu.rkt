@@ -74,8 +74,7 @@
    ; 16-button keypad, boolean vector representing if button is down
    (make-vector 16 #f)
    ; first key pressed transition since the last instruction
-   #f
-   ))
+   #f))
 
 (define (chip-8-reg-v-ref c x) (bytes-ref (chip-8-reg-v c) x))
 (define (chip-8-reg-v-set! c x val) (bytes-set! (chip-8-reg-v c) x val))
@@ -232,7 +231,9 @@
     ; 4XNN Skip the following instruction if the value of register VX is not equal to NN
     [(list #x4 _ _ _) (unless (= (chip-8-reg-v-ref c X) NN) (skip! c))]
     ; 5XY0 Skip the following instruction if the value of register VX is equal to the value of register VY
-    [(list #x5 _ _ #x0) (when (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
+    [(list #x5 _ _ #x0)
+     (when (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y))
+       (skip! c))]
     ; 6XNN Store number NN in register VX
     [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
     ; 7XNN Add the value NN to register VX
@@ -293,7 +294,9 @@
      (chip-8-reg-v-set! c X (bitwise-and shifted #xFF))
      (chip-8-reg-v-set! c #xF (arithmetic-shift shifted -8))]
     ; 9XY0 Skip the following instruction if the value of register VX is not equal to the value of register VY
-    [(list #x9 _ _ #x0) (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)) (skip! c))]
+    [(list #x9 _ _ #x0)
+     (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y))
+       (skip! c))]
     ; ANNN Store memory address NNN in register I
     [(list #xA _ _ _) (set-chip-8-i! c NNN)]
     ; BNNN Jump to address NNN + V0, or NNN + VX in compatibility mode
@@ -340,7 +343,7 @@
      (define mem (chip-8-memory c))
      (define i (chip-8-i c))
      (define vx (chip-8-reg-v-ref c X))
-     (for ([j (in-naturals)][k (in-list '(2 1 0))])
+     (for ([j (in-naturals)] [k (in-list '(2 1 0))])
        (define power (expt 10 j))
        (bytes-set! mem (+ i k) (remainder (quotient vx power) 10)))]
     ; FX55 Store registers V0 through VX inclusive in memory starting at I.
@@ -360,7 +363,9 @@
      (for ([j (in-inclusive-range 0 X)])
        (chip-8-reg-v-set! c j (bytes-ref mem (+ i j))))
      (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
-    [else (error (string-append "Unknown opcode 0x" (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
+    [else
+     (error (string-append "Unknown opcode 0x"
+                           (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
   ;; FX0A consumes a pending keypress; every other instruction discards it.
   (set-chip-8-pending-keypress! c #f))
 
@@ -428,7 +433,8 @@
     (bytes-copy! interpreter-memory font-address default-font)
     (check-equal? (subbytes mem 0 load-address) interpreter-memory)
     (check-equal? (subbytes mem load-address (+ load-address rom-len)) rom)
-    (check-equal? (subbytes mem (+ load-address rom-len)) (make-bytes (- memory-size load-address rom-len))))
+    (check-equal? (subbytes mem (+ load-address rom-len))
+                  (make-bytes (- memory-size load-address rom-len))))
 
   (test-case "load-rom"
              (define chip (make-chip-8))
@@ -1207,5 +1213,4 @@
              (check-eq? (chip-8-reg-v-ref chip #x1) #x34)
              (check-eq? (chip-8-reg-v-ref chip #x2) #x56)
              (check-eq? (chip-8-reg-v-ref chip #x3) #xEE)
-             (check-eq? (chip-8-i chip) #x300))
-  )
+             (check-eq? (chip-8-i chip) #x300)))
