@@ -385,7 +385,7 @@
   (define chip (make-chip-8))
   (define rom (file->bytes "roms/test-opcode.ch8"))
   (load-rom! chip rom)
-  (for ([i (in-naturals)])
+  (for ([_ (in-range 10000)])
     (step chip)))
 
 (module+ test

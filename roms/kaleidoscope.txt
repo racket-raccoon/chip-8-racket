@@ -1,0 +1,13 @@
+Non-default setup for kaleidoscope.ch8
+
+Change the execution speed:
+
+  opcodes/second = 900
+
+Keep the current compatibility parameters. This is Joseph Weisbecker's
+1978 original-CHIP-8 Kaleidoscope ROM. Its preferred platform default is
+15 opcodes per 60 Hz frame (900 per second).
+
+The database also lists modern CHIP-8 as a fallback, but original CHIP-8
+is preferred. The original COSMAC VIP vblank wait is not configurable in
+this emulator, so the timing is approximate.

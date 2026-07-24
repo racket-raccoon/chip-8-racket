@@ -2,6 +2,7 @@
 compiled/
 *.zo
 *.dep
+/gui
 
 # Editor backup files
 *~
