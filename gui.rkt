@@ -17,6 +17,20 @@
 
 (define chip (make-chip-8))
 
+; The loaded ROM's lifecycle state; the bytes are cached at load time so
+; reset is deterministic even if the file changes on disk
+(define current-rom-path #f)
+(define current-rom-bytes #f)
+(define current-rom-note #f)
+(define paused? #f)
+
+; A ROM's setup note is an adjacent .txt file with the same base name;
+; it is shown to the user as plain UTF-8 text and never parsed
+(define (read-rom-note path)
+  (define note-path (path-replace-extension path ".txt"))
+  (and (file-exists? note-path)
+       (string-trim (file->string note-path) #:left? #f)))
+
 (define chip-8-frame%
   (class frame%
     (define/augment (on-close)
@@ -118,11 +132,124 @@
              ("All files" "*.*"))))
 
         (when selected-path
-          (define rom (file->bytes selected-path))
-          (load-rom! chip rom)
-          (scheduler-rebase! scheduler)
-          (send canvas refresh-now)
-          (send timer start scheduler-poll-ms)))])
+          (load-rom-from-path! selected-path)))])
+
+; Read-only display of the loaded ROM's path and its setup note
+(define rom-info-dialog
+  (new dialog%
+       [label "ROM Info"]
+       [parent frame]
+       [stretchable-width #f]
+       [stretchable-height #f]))
+
+(define rom-info-path-message
+  (new message%
+       [parent rom-info-dialog]
+       [label ""]
+       [auto-resize #t]))
+
+(define rom-info-note-field
+  (new text-field%
+       [parent rom-info-dialog]
+       [label #f]
+       [style '(multiple)]
+       [min-height 160]))
+
+; The editor is locked so the note stays read-only on screen
+(let ([editor (send rom-info-note-field get-editor)])
+  (send editor lock #t))
+
+(new button%
+     [parent rom-info-dialog]
+     [label "Close"]
+     [callback (λ (_button _event) (send rom-info-dialog show #f))])
+
+(define (show-rom-info!)
+  (send rom-info-path-message set-label (path->string current-rom-path))
+  (define editor (send rom-info-note-field get-editor))
+  ; a locked editor refuses inserts, so unlock just for the refresh
+  (send editor lock #f)
+  (send editor erase)
+  (send editor insert current-rom-note)
+  (send editor lock #t)
+  (send rom-info-dialog show #t))
+
+(define rom-info-item
+  (new menu-item%
+       [label "ROM &Info..."]
+       [parent file-menu]
+       [callback (λ (_item _event) (show-rom-info!))]))
+
+(define machine-menu
+  (new menu% [label "&Machine"] [parent menu-bar]))
+
+(define pause-item
+  (new menu-item%
+       [label "&Pause"]
+       [parent machine-menu]
+       [callback (λ (_item _event) (toggle-pause!))]))
+
+(define reset-item
+  (new menu-item%
+       [label "Rese&t"]
+       [parent machine-menu]
+       [callback (λ (_item _event) (reset-rom!))]))
+
+(define restart-item
+  (new menu-item%
+       [label "&Restart"]
+       [parent machine-menu]
+       [callback (λ (_item _event) (restart-rom!))]))
+
+; Reload the cached bytes into a clean machine and re-anchor time; the
+; paused state after this is the caller's decision
+(define (reload-cached-rom!)
+  (load-rom! chip current-rom-bytes)
+  (scheduler-rebase! scheduler))
+
+(define (load-rom-from-path! path)
+  (set! current-rom-path path)
+  (set! current-rom-bytes (file->bytes path))
+  (set! current-rom-note (read-rom-note path))
+  (set! paused? #f)
+  (reload-cached-rom!)
+  (send timer start scheduler-poll-ms)
+  (update-controls!)
+  (send canvas refresh-now)
+  (send canvas focus))
+
+(define (toggle-pause!)
+  (set! paused? (not paused?))
+  (if paused?
+      (send timer stop)
+      ; paused wall time must not queue overdue emulated work
+      (begin (scheduler-rebase! scheduler)
+             (send timer start scheduler-poll-ms)))
+  (update-controls!))
+
+(define (reset-rom!)
+  ; a fresh machine left paused at its initial state
+  (reload-cached-rom!)
+  (set! paused? #t)
+  (send timer stop)
+  (update-controls!)
+  (send canvas refresh-now))
+
+(define (restart-rom!)
+  (reload-cached-rom!)
+  (set! paused? #f)
+  (send timer start scheduler-poll-ms)
+  (update-controls!)
+  (send canvas refresh-now))
+
+; Keep the lifecycle controls honest about what is possible right now
+(define (update-controls!)
+  (define has-rom? (and current-rom-bytes #t))
+  (send pause-item set-label (if paused? "&Resume" "&Pause"))
+  (send pause-item enable has-rom?)
+  (send reset-item enable has-rom?)
+  (send restart-item enable has-rom?)
+  (send rom-info-item enable (and current-rom-note #t)))
 
 ; FX55/FX65 memory behaviors, in settings-display order
 (define load-store-modes
@@ -330,6 +457,8 @@
         (update-dialog-widgets!)
         (send settings-dialog show #t)
         (send canvas focus))])
+
+(update-controls!)
 
 (send frame show #t)
 (send canvas focus)
