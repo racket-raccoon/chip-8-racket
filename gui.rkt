@@ -12,10 +12,11 @@
                 load-store-i-mode
                 logic-ops-clear-vf?
                 shifts-use-vy?
-                jump-uses-vx?)
+                jump-uses-vx?
+                sprites-wrap?)
   #:transparent #:mutable)
 
-(define settings (compat #f 'increment-x+1 #t #t #f))
+(define settings (compat #f 'increment-x+1 #t #t #f #f))
 
 (define chip (make-chip-8))
 
@@ -97,7 +98,8 @@
                          [load-store-i-mode (compat-load-store-i-mode settings)]
                          [logic-ops-clear-vf? (compat-logic-ops-clear-vf? settings)]
                          [shifts-use-vy? (compat-shifts-use-vy? settings)]
-                         [jump-uses-vx? (compat-jump-uses-vx? settings)])
+                         [jump-uses-vx? (compat-jump-uses-vx? settings)]
+                         [sprites-wrap? (compat-sprites-wrap? settings)])
             (for ([_ (in-range (quotient opcodes/second ticks/second))])
               (step chip (λ () (set! refresh-requested? #t)))))
           (when refresh-requested? (send canvas refresh-now))
@@ -192,6 +194,15 @@
      [callback
       (λ (box _event)
         (set-compat-jump-uses-vx?! settings
+                                   (send box get-value)))])
+
+(new check-box%
+     [parent settings-panel]
+     [label "Wrap sprites at screen edges"]
+     [value (compat-sprites-wrap? settings)]
+     [callback
+      (λ (box _event)
+        (set-compat-sprites-wrap?! settings
                                    (send box get-value)))])
 
 (new menu-item%

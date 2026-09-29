@@ -13,7 +13,8 @@
          load-store-i-mode
          logic-ops-clear-vf?
          shifts-use-vy?
-         jump-uses-vx?)
+         jump-uses-vx?
+         sprites-wrap?)
 
 (struct chip-8
   (memory pc i reg-v stack sp framebuffer delay-timer sound-timer keypad
@@ -48,6 +49,9 @@
 ; The original COSMAC VIP jumps to NNN plus V0 for BNNN. CHIP-48 and
 ; SUPER-CHIP instead use the register selected by X, treating it as BXNN.
 (define jump-uses-vx? (make-parameter #f))
+; CHIP-8 sprites clip at the right and bottom screen edges. CHIP-48 and
+; SUPER-CHIP instead draw every sprite pixel modulo the screen dimensions.
+(define sprites-wrap? (make-parameter #f))
 
 ; FX55 and FX65 both update I with this one rule; 'unchanged falls through.
 (define (update-i-after-load-store! c x)
@@ -208,19 +212,32 @@
   (define NNN (bitwise-and opcode #xFFF))
   (list family X Y N NN NNN))
 
+; XOR one pixel into the framebuffer, setting VF on any collision.
+(define (chip-8-xor-pixel! c x y)
+  (define old (chip-8-pixel-ref c x y))
+  (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
+  (chip-8-pixel-set! c x y (bitwise-xor old #x1)))
+
 (define (chip-8-draw-sprite! c X Y N)
+  ; Starting coordinates always reduce modulo the screen dimensions.
   (define x (remainder (chip-8-reg-v-ref c X) screen-width)) ; column
   (define y (remainder (chip-8-reg-v-ref c Y) screen-height)) ; row
   (chip-8-reg-v-set! c #xF #x00)
-  (for ([n (in-range N)] #:break (>= (+ y n) screen-height))
+  (for ([n (in-range N)])
     (define sprite-row (bytes-ref (chip-8-memory c) (+ (chip-8-i c) n)))
     (for ([bit (in-inclusive-range 7 0 -1)]
           [j (in-naturals)]
-          #:when (bitwise-bit-set? sprite-row bit)
-          #:break (>= (+ x j) screen-width))
-      (define old (chip-8-pixel-ref c (+ x j) (+ y n)))
-      (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
-      (chip-8-pixel-set! c (+ x j) (+ y n) (bitwise-xor old #x1)))))
+          #:when (bitwise-bit-set? sprite-row bit))
+      (define px (+ x j))
+      (define py (+ y n))
+      (cond
+        ; Wrap mode takes every pixel modulo the screen dimensions;
+        ; clip mode ignores pixels past the right or bottom edge.
+        [(sprites-wrap?)
+         (chip-8-xor-pixel! c (remainder px screen-width)
+                               (remainder py screen-height))]
+        [(and (< px screen-width) (< py screen-height))
+         (chip-8-xor-pixel! c px py)]))))
 
 (define (skip! c [n 1]) (set-chip-8-pc! c (+ (* 2 n) (chip-8-pc c))))
 
@@ -976,6 +993,77 @@
                             (* (sub1 screen-height) screen-width))
                          1)
              (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "DXYN wraps sprite columns past the right edge"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 2))
+             (chip-8-reg-v-set! chip #x0 #xFF) ; 255 mod 64 = column 63
+             (chip-8-reg-v-set! chip #x1 #x05)
+
+             (parameterize ([sprites-wrap? #t])
+               (step chip))
+
+             (define expected (make-bytes (* screen-height screen-width)))
+             (for ([point '((63 5) (0 5) (63 6) (0 6))])
+               (match-define (list x y) point)
+               (bytes-set! expected (+ x (* y screen-width)) 1))
+             (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "DXYN wraps sprite rows past the bottom edge"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 2))
+             (chip-8-reg-v-set! chip #x0 #x05)
+             (chip-8-reg-v-set! chip #x1 #xFF) ; 255 mod 32 = row 31
+
+             (parameterize ([sprites-wrap? #t])
+               (step chip))
+
+             (define expected (make-bytes (* screen-height screen-width)))
+             (for ([point '((5 31) (6 31) (5 0) (6 0))])
+               (match-define (list x y) point)
+               (bytes-set! expected (+ x (* y screen-width)) 1))
+             (check-equal? (chip-8-framebuffer chip) expected))
+
+  (test-case "DXYN wraps sprite pixels around the bottom-right corner"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 2))
+             (chip-8-reg-v-set! chip #x0 #xFF) ; 255 mod 64 = column 63
+             (chip-8-reg-v-set! chip #x1 #xFF) ; 255 mod 32 = row 31
+
+             (parameterize ([sprites-wrap? #t])
+               (step chip))
+
+             (define expected (make-bytes (* screen-height screen-width)))
+             (for ([point '((63 31) (0 31) (63 0) (0 0))])
+               (match-define (list x y) point)
+               (bytes-set! expected (+ x (* y screen-width)) 1))
+             (check-equal? (chip-8-framebuffer chip) expected)
+             (check-eq? (chip-8-reg-v-ref chip #xF) 0))
+
+  (test-case "wrapped pixels report collisions at their destination"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 2))
+             (chip-8-reg-v-set! chip #x0 #xFF)
+             (chip-8-reg-v-set! chip #x1 #xFF)
+             (chip-8-pixel-set! chip 0 0 1) ; a wrapped pixel will land here
+
+             (parameterize ([sprites-wrap? #t])
+               (step chip))
+
+             (check-eq? (chip-8-reg-v-ref chip #xF) 1)
+             (check-eq? (chip-8-pixel-ref chip 0 0) 0))
 
   (test-case "EX9E skips only when the key in VX is held"
              (define held-chip (make-chip-8))
