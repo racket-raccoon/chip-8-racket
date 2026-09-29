@@ -5,17 +5,17 @@
 (define scale-factor 10)
 
 (define ticks/second 60)
-(define opcodes/second 1200)
+(define opcodes/second 1800)
 (define ms/tick (quotient 1000 ticks/second))
 
 (struct compat (fx1e-sets-vf?
-                load-store-increments-i?
+                load-store-i-mode
                 logic-ops-clear-vf?
                 shifts-use-vy?
                 jump-uses-vx?)
   #:transparent #:mutable)
 
-(define settings (compat #f #t #t #t #f))
+(define settings (compat #f 'increment-x+1 #t #t #f))
 
 (define chip (make-chip-8))
 
@@ -94,7 +94,7 @@
         (λ ()
           (define refresh-requested? #f)
           (parameterize ([fx1e-sets-vf? (compat-fx1e-sets-vf? settings)]
-                         [load-store-increments-i? (compat-load-store-increments-i? settings)]
+                         [load-store-i-mode (compat-load-store-i-mode settings)]
                          [logic-ops-clear-vf? (compat-logic-ops-clear-vf? settings)]
                          [shifts-use-vy? (compat-shifts-use-vy? settings)]
                          [jump-uses-vx? (compat-jump-uses-vx? settings)])
@@ -148,14 +148,24 @@
         (set-compat-fx1e-sets-vf?! settings
                                    (send box get-value)))])
 
-(new check-box%
+; FX55/FX65 memory behaviors, in settings-display order
+(define load-store-modes
+  '((increment-x+1 "I += X + 1 (original CHIP-8)")
+    (increment-x "I += X (CHIP-48)")
+    (unchanged "I unchanged (SUPER-CHIP 1.1)")))
+
+(new choice%
      [parent settings-panel]
-     [label "FX55/FX65 increment I"]
-     [value (compat-load-store-increments-i? settings)]
+     [label "FX55/FX65 memory mode"]
+     [choices (map second load-store-modes)]
+     [selection (index-of (map first load-store-modes)
+                          (compat-load-store-i-mode settings))]
      [callback
-      (λ (box _event)
-        (set-compat-load-store-increments-i?! settings
-                                              (send box get-value)))])
+      (λ (choice _event)
+        (set-compat-load-store-i-mode!
+         settings
+         (list-ref (map first load-store-modes)
+                   (send choice get-selection))))])
 
 (new check-box%
      [parent settings-panel]
