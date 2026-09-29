@@ -5,6 +5,8 @@
          tick!
          step
          chip-8-pixel-ref
+         chip-8-reg-v-ref
+         chip-8-reg-v-set!
          chip-8-key-pressed!
          chip-8-key-released!
          screen-width
