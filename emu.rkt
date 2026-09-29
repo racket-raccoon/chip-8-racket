@@ -9,6 +9,10 @@
          chip-8-reg-v-set!
          chip-8-key-pressed!
          chip-8-key-released!
+         exn:chip-8?
+         exn:chip-8-pc
+         exn:chip-8-opcode
+         exn:chip-8-operation
          screen-width
          screen-height
          fx1e-sets-vf?
@@ -32,6 +36,29 @@
 (define font-size 5)
 (define screen-height 32)
 (define screen-width 64)
+
+; A machine-level failure carrying the PC, the opcode when one was
+; decoded, and the failing operation, so errors can explain themselves
+(struct exn:chip-8 exn:fail (pc opcode operation) #:transparent)
+
+(define (format-address n)
+  (string-upcase (~r n #:base 16 #:min-width 4 #:pad-string "0")))
+
+; Raise a contextual machine error. The PC is whatever the machine
+; holds right now, typically just past the failing opcode, so callers
+; also get the opcode for locating the instruction.
+(define (chip-8-error c operation #:opcode [opcode #f] #:detail [detail #f])
+  (raise
+   (exn:chip-8
+    (string-append
+     "CHIP-8 " operation
+     " at PC 0x" (format-address (chip-8-pc c))
+     (if opcode (format " (opcode 0x~a)" (format-address opcode)) "")
+     (if detail (string-append ": " detail) ""))
+    (current-continuation-marks)
+    (chip-8-pc c)
+    opcode
+    operation)))
 
 ;; ambiguous instructions!
 ; The original COSMAC VIP allows I to exceed 0xFFF and leaves VF unchanged.
@@ -118,13 +145,13 @@
 (define (chip-8-stack-push! c val)
   (define stack (chip-8-stack c))
   (define sp (chip-8-sp c))
-  (when (= sp stack-size) (error "Stack Overflow"))
+  (when (= sp stack-size) (chip-8-error c "Stack Overflow"))
   (vector-set! stack sp val)
   (set-chip-8-sp! c (add1 sp)))
 
 (define (chip-8-stack-pop! c)
   (define sp (chip-8-sp c))
-  (when (zero? sp) (error "Stack Underflow"))
+  (when (zero? sp) (chip-8-error c "Stack Underflow"))
   (define top (chip-8-stack-peek c))
   (vector-set! (chip-8-stack c) (sub1 sp) 0) ; optional
   (set-chip-8-sp! c (sub1 sp))
@@ -177,6 +204,14 @@
    ))
 
 (define (load-rom! c rom)
+  ; reject before touching any state, so a failed load changes nothing
+  (when (> (bytes-length rom) (- memory-size load-address))
+    (chip-8-error c "loading ROM"
+                  #:detail
+                  (format "the ROM is ~a bytes but at most ~a fit at 0x~a"
+                          (bytes-length rom)
+                          (- memory-size load-address)
+                          (format-address load-address))))
   ; reset emulator state
   (define mem (chip-8-memory c))
   (bytes-fill! mem 0)
@@ -199,14 +234,17 @@
 ; Read the opcode at the PC without advancing it, so callers can decide
 ; whether an instruction may execute at all.
 (define (peek-opcode c)
-  (define mem (chip-8-memory c))
   (define pc (chip-8-pc c))
+  (when (or (negative? pc) (>= (add1 pc) memory-size))
+    (chip-8-error c "fetching an opcode"
+                  #:detail (format "0x~a does not leave two readable bytes"
+                                   (format-address pc))))
+  (define mem (chip-8-memory c))
   (bitwise-ior (arithmetic-shift (bytes-ref mem pc) 8)
                (bytes-ref mem (add1 pc))))
 
 (define (fetch-opcode c)
-  (bitwise-ior (arithmetic-shift (bytes-ref (chip-8-memory c) (chip-8-pc c)) 8)
-               (bytes-ref (chip-8-memory c) (add1 (chip-8-pc c)))))
+  (begin0 (peek-opcode c) (skip! c)))
 
 (define (decompose-opcode opcode)
   ;; 0x [family] X Y N
@@ -233,7 +271,15 @@
   (unless (zero? old) (chip-8-reg-v-set! c #xF #x01))
   (chip-8-pixel-set! c x y (bitwise-xor old #x1)))
 
-(define (chip-8-draw-sprite! c X Y N)
+(define (chip-8-draw-sprite! c X Y N opcode)
+  ; every sprite byte must be readable, whether or not a row is clipped
+  (define i (chip-8-i c))
+  (when (> (+ i N) memory-size)
+    (chip-8-error c "reading sprite data"
+                  #:opcode opcode
+                  #:detail (format "the sprite reads 0x~a through 0x~a"
+                                   (format-address i)
+                                   (format-address (+ i N -1)))))
   ; Starting coordinates always reduce modulo the screen dimensions.
   (define x (remainder (chip-8-reg-v-ref c X) screen-width)) ; column
   (define y (remainder (chip-8-reg-v-ref c Y) screen-height)) ; row
@@ -283,9 +329,8 @@
           (= (arithmetic-shift (peek-opcode c) -12) #xD))
      'waiting-vblank]
     [else
-     ;; FETCH
+     ;; FETCH (advances the PC past the opcode)
      (define opcode (fetch-opcode c))
-     (skip! c)
      ;; DECODE & EXECUTE
      (match-define (list family X Y N NN NNN) (decompose-opcode opcode))
      ;; https://github.com/mattmikolay/chip-8/wiki/CHIP%E2%80%908-Instruction-Set
@@ -295,7 +340,8 @@
       ; 00EE Return from a subroutine
       [(list #x0 #x0 #xE #xE) (set-chip-8-pc! c (chip-8-stack-pop! c))]
       ; 0NNN Execute machine language subroutine - unsupported by this emulator
-      [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
+      [(list #x0 _ _ _)
+       (chip-8-error c "machine-language subroutine" #:opcode opcode)]
       ; 1NNN Jump to address NNN
       [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
       ; 2NNN Execute subroutine starting at address NNN
@@ -381,11 +427,11 @@
       ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
       ;      starting at the address stored in I.  Set VF to 01 if any set
       ;      pixels are changed to unset, and 00 otherwise
-      [(list #xD _ _ _)
-       ; In vblank mode this draw consumes the frame's single permit
-       (when (draw-waits-for-vblank?) (set-chip-8-draw-permitted?! c #f))
-       (chip-8-draw-sprite! c X Y N)
-       (request-redraw)]
+        [(list #xD _ _ _)
+         ; In vblank mode this draw consumes the frame's single permit
+         (when (draw-waits-for-vblank?) (set-chip-8-draw-permitted?! c #f))
+         (chip-8-draw-sprite! c X Y N opcode)
+         (request-redraw)]
       ; EX9E Skip the following instruction if the key corresponding to the hex value
       ;      currently stored in register VX is pressed
       [(list #xE _ #x9 #xE)
@@ -432,6 +478,12 @@
       [(list #xF _ #x3 #x3)
        (define mem (chip-8-memory c))
        (define i (chip-8-i c))
+       (when (> (+ i 3) memory-size)
+         (chip-8-error c "storing BCD digits"
+                       #:opcode opcode
+                       #:detail (format "0x~a through 0x~a must be writable"
+                                        (format-address i)
+                                        (format-address (+ i 2)))))
        (define vx (chip-8-reg-v-ref c X))
        (for ([j (in-naturals)] [k (in-list '(2 1 0))])
          (define power (expt 10 j))
@@ -442,6 +494,12 @@
       [(list #xF _ #x5 #x5)
        (define mem (chip-8-memory c))
        (define i (chip-8-i c))
+       (when (> (+ i X 1) memory-size)
+         (chip-8-error c "storing registers"
+                       #:opcode opcode
+                       #:detail (format "0x~a through 0x~a must be writable"
+                                        (format-address i)
+                                        (format-address (+ i X)))))
        (for ([j (in-inclusive-range 0 X)])
          (bytes-set! mem (+ i j) (chip-8-reg-v-ref c j)))
        (update-i-after-load-store! c X)]
@@ -451,12 +509,17 @@
       [(list #xF _ #x6 #x5)
        (define mem (chip-8-memory c))
        (define i (chip-8-i c))
+       (when (> (+ i X 1) memory-size)
+         (chip-8-error c "loading registers"
+                       #:opcode opcode
+                       #:detail (format "0x~a through 0x~a must be readable"
+                                        (format-address i)
+                                        (format-address (+ i X)))))
        (for ([j (in-inclusive-range 0 X)])
          (chip-8-reg-v-set! c j (bytes-ref mem (+ i j))))
        (update-i-after-load-store! c X)]
       [else
-       (error (string-append "Unknown opcode 0x"
-                             (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
+       (chip-8-error c "Unknown opcode" #:opcode opcode)])
      ;; FX0A leaves an active wait in place; every other opcode ran to
      ;; completion.
      (if (chip-8-waiting-key-register c) 'waiting-key 'executed)]))
@@ -1572,4 +1635,125 @@
                (step chip))
 
              (check-eq? (chip-8-reg-v-ref chip #x0) #x12)
-             (check-eq? (chip-8-i chip) #x300)))
+             (check-eq? (chip-8-i chip) #x300))
+
+  (test-case "load-rom rejects oversized ROMs without changing state"
+             (define chip (make-chip-8))
+             (load-rom! chip test-rom)
+             (define max-rom-size (- memory-size load-address))
+
+             (check-exn exn:chip-8?
+                        (lambda ()
+                          (load-rom! chip (make-bytes (add1 max-rom-size)))))
+             (check-exn #rx"at most 3584"
+                        (lambda ()
+                          (load-rom! chip (make-bytes (* 2 max-rom-size)))))
+
+             ; the previous ROM is still intact after a failed load
+             (check-eq? (chip-8-pc chip) load-address)
+             (check-equal?
+              (subbytes (chip-8-memory chip) load-address
+                        (+ load-address (bytes-length test-rom)))
+              test-rom)
+
+             ; a ROM of exactly the maximum size is fine
+             (load-rom! chip (make-bytes max-rom-size))
+             (check-eq? (chip-8-pc chip) load-address))
+
+  (test-case "fetching an opcode needs two readable bytes"
+             (define chip (make-chip-8))
+             (load-rom! chip minimal-rom)
+
+             ; the last two bytes are a valid fetch boundary
+             (set-chip-8-pc! chip (- memory-size 2))
+             (bytes-set! (chip-8-memory chip) (- memory-size 2) #x12)
+             (bytes-set! (chip-8-memory chip) (sub1 memory-size) #x00)
+             (step chip)
+             (check-eq? (chip-8-pc chip) load-address)
+
+             ; one byte further and the fetch itself is invalid
+             (set-chip-8-pc! chip (sub1 memory-size))
+             (check-exn exn:chip-8? (lambda () (step chip)))
+             (check-exn #rx"fetching an opcode" (lambda () (peek-opcode chip))))
+
+  (test-case "sprite reads must stay inside memory"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x01))
+
+             ; a one-byte sprite at the last memory byte is fine
+             (set-chip-8-i! chip (sub1 memory-size))
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #xF) 0)
+
+             ; the first read past the end is rejected, with the opcode
+             (set-chip-8-i! chip memory-size)
+             (set-chip-8-pc! chip load-address) ; back onto the DXYN
+             (with-handlers ([exn:chip-8?
+                              (lambda (e)
+                                (check-eq? (exn:chip-8-opcode e) #xD001)
+                                (check-equal? (exn:chip-8-operation e)
+                                              "reading sprite data"))])
+               (step chip)))
+
+  (test-case "FX33 needs three writable bytes"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xFA #x33))
+             (chip-8-reg-v-set! chip #xA 156)
+
+             ; 0xFFD through 0xFFF is the last valid range
+             (set-chip-8-i! chip (- memory-size 3))
+             (step chip)
+             (check-equal? (subbytes (chip-8-memory chip)
+                                     (- memory-size 3) memory-size)
+                           (bytes 1 5 6))
+
+             ; the fetch advances the PC even when the opcode is rejected
+             (set-chip-8-i! chip (- memory-size 2))
+             (check-exn exn:chip-8? (lambda () (step chip)))
+
+             (set-chip-8-pc! chip load-address) ; back onto the FX33
+             (set-chip-8-i! chip (- memory-size 2))
+             (check-exn #rx"storing BCD digits" (lambda () (step chip))))
+
+  (test-case "FX55 and FX65 need X + 1 accessible bytes"
+             (define store-chip (make-chip-8))
+             (load-rom! store-chip (bytes #xF1 #x55))
+             (chip-8-reg-v-set! store-chip #x1 #xAB)
+
+             ; two bytes ending at the final memory byte are fine
+             (set-chip-8-i! store-chip (- memory-size 2))
+             (step store-chip)
+             (check-eq? (chip-8-reg-v-ref store-chip #x1) #xAB)
+
+             (set-chip-8-pc! store-chip load-address)
+             (set-chip-8-i! store-chip (sub1 memory-size))
+             (check-exn #rx"storing registers"
+                        (lambda () (step store-chip)))
+
+             (define load-chip (make-chip-8))
+             (load-rom! load-chip (bytes #xF1 #x65))
+
+             (set-chip-8-i! load-chip (- memory-size 2))
+             (step load-chip)
+             (check-eq? (chip-8-reg-v-ref load-chip #x1) 0)
+
+             (set-chip-8-pc! load-chip load-address)
+             (set-chip-8-i! load-chip (sub1 memory-size))
+             (check-exn #rx"loading registers"
+                        (lambda () (step load-chip))))
+
+  (test-case "machine errors carry the PC, opcode, and operation"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x5A #xB1)) ; invalid 5XY1
+
+             (with-handlers
+                 ([exn:chip-8?
+                   (lambda (e)
+                     (check-eq? (exn:chip-8-pc e) (+ load-address 2))
+                     (check-eq? (exn:chip-8-opcode e) #x5AB1)
+                     (check-equal? (exn:chip-8-operation e) "Unknown opcode"))])
+               (step chip))
+
+             (set-chip-8-pc! chip load-address) ; back onto 5XY1
+             (check-exn #rx"Unknown opcode at PC 0x0202 \\(opcode 0x5AB1\\)"
+                        (lambda () (step chip)))))

@@ -102,17 +102,27 @@
 
 (define scheduler (make-scheduler opcodes/second))
 
+; Report one machine failure and leave the window usable: execution is
+; paused, the timer stops, and Reset/Restart/Load stay available
+(define (machine-error! message)
+  (set! paused? #t)
+  (send timer stop)
+  (update-controls!)
+  (message-box "CHIP-8 Error" message frame '(ok caution)))
+
 (define timer
   (new timer%
        [notify-callback
         (λ ()
           (define refresh-requested? #f)
-          (with-compat settings
-            (λ ()
-              (scheduler-run scheduler
-                             (current-inexact-monotonic-milliseconds)
-                             (λ () (step chip (λ () (set! refresh-requested? #t))))
-                             (λ () (tick! chip bell)))))
+          (with-handlers ([exn:fail?
+                           (λ (e) (machine-error! (exn-message e)))])
+            (with-compat settings
+              (λ ()
+                (scheduler-run scheduler
+                               (current-inexact-monotonic-milliseconds)
+                               (λ () (step chip (λ () (set! refresh-requested? #t))))
+                               (λ () (tick! chip bell))))))
           (when refresh-requested? (send canvas refresh-now)))]))
 
 (new menu-item%
@@ -132,7 +142,14 @@
              ("All files" "*.*"))))
 
         (when selected-path
-          (load-rom-from-path! selected-path)))])
+          (load-rom-with-errors! selected-path)))])
+
+; The menu's error boundary, factored out so scripts can drive the
+; exact production path
+(define (load-rom-with-errors! path)
+  (with-handlers ([exn:fail?
+                   (λ (e) (machine-error! (exn-message e)))])
+    (load-rom-from-path! path)))
 
 ; Read-only display of the loaded ROM's path and its setup note
 (define rom-info-dialog
