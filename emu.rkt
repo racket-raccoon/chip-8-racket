@@ -17,7 +17,7 @@
 
 (struct chip-8
   (memory pc i reg-v stack sp framebuffer delay-timer sound-timer keypad
-          pending-keypress)
+          pending-keypress waiting-key-register waiting-key-value)
   #:transparent #:mutable)
 
 (define memory-size #x1000)
@@ -73,7 +73,11 @@
    0
    ; 16-button keypad, boolean vector representing if button is down
    (make-vector 16 #f)
-   ; first key pressed transition since the last instruction
+   ; first key press transition not yet consumed by FX0A, or #f
+   #f
+   ; register index of an active FX0A, or #f while no FX0A is waiting
+   #f
+   ; key latched by an active FX0A whose release is still awaited, or #f
    #f))
 
 (define (chip-8-reg-v-ref c x) (bytes-ref (chip-8-reg-v c) x))
@@ -111,14 +115,26 @@
 
 (define (chip-8-key-pressed! c n)
   (define keypad (chip-8-keypad c))
-  (unless (chip-8-pending-keypress c)
-    (unless (vector-ref keypad n) ; #f -> #t transition
-      (set-chip-8-pending-keypress! c n)))
-  (vector-set! keypad n #t))
+  (unless (vector-ref keypad n) ; a repeated press is auto-repeat, not a new event
+    (vector-set! keypad n #t)
+    (cond
+      [(and (chip-8-waiting-key-register c)
+            (not (chip-8-waiting-key-value c)))
+       ; FX0A is waiting for a press; hand this one directly to it
+       (set-chip-8-waiting-key-value! c n)]
+      [(not (chip-8-pending-keypress c))
+       (set-chip-8-pending-keypress! c n)])))
 
 (define (chip-8-key-released! c n)
-  (define keypad (chip-8-keypad c))
-  (vector-set! keypad n #f))
+  (vector-set! (chip-8-keypad c) n #f)
+  ; Completing the latched FX0A press satisfies the wait; execution resumes
+  ; at the caller's next step, not from inside this callback.
+  (define register (chip-8-waiting-key-register c))
+  (define latched (chip-8-waiting-key-value c))
+  (when (and register latched (= latched n))
+    (chip-8-reg-v-set! c register n)
+    (set-chip-8-waiting-key-register! c #f)
+    (set-chip-8-waiting-key-value! c #f)))
 
 (define default-font
   (bytes
@@ -155,7 +171,9 @@
   (set-chip-8-delay-timer! c 0)
   (set-chip-8-sound-timer! c 0)
   (vector-fill! (chip-8-keypad c) #f)
-  (set-chip-8-pending-keypress! c #f))
+  (set-chip-8-pending-keypress! c #f)
+  (set-chip-8-waiting-key-register! c #f)
+  (set-chip-8-waiting-key-value! c #f))
 
 (define (fetch-opcode c)
   (define mem (chip-8-memory c))
@@ -209,165 +227,185 @@
     (set-chip-8-sound-timer! c (sub1 sound-timer))))
 
 (define (step c [request-redraw void])
-  ;; FETCH
-  (define opcode (fetch-opcode c))
-  (skip! c)
-  ;; DECODE & EXECUTE
-  (match-define (list family X Y N NN NNN) (decompose-opcode opcode))
-  ;; https://github.com/mattmikolay/chip-8/wiki/CHIP%E2%80%908-Instruction-Set
-  (match (list family X Y N)
-    ; 00E0 Clear the screen
-    [(list #x0 #x0 #xE #x0) (bytes-fill! (chip-8-framebuffer c) 0) (request-redraw)]
-    ; 00EE Return from a subroutine
-    [(list #x0 #x0 #xE #xE) (set-chip-8-pc! c (chip-8-stack-pop! c))]
-    ; 0NNN Execute machine language subroutine - unsupported by this emulator
-    [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
-    ; 1NNN Jump to address NNN
-    [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
-    ; 2NNN Execute subroutine starting at address NNN
-    [(list #x2 _ _ _) (chip-8-stack-push! c (chip-8-pc c)) (set-chip-8-pc! c NNN)]
-    ; 3XNN Skip the following instruction if the value of register VX equals NN
-    [(list #x3 _ _ _) (when (= (chip-8-reg-v-ref c X) NN) (skip! c))]
-    ; 4XNN Skip the following instruction if the value of register VX is not equal to NN
-    [(list #x4 _ _ _) (unless (= (chip-8-reg-v-ref c X) NN) (skip! c))]
-    ; 5XY0 Skip the following instruction if the value of register VX is equal to the value of register VY
-    [(list #x5 _ _ #x0)
-     (when (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y))
-       (skip! c))]
-    ; 6XNN Store number NN in register VX
-    [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
-    ; 7XNN Add the value NN to register VX
-    [(list #x7 _ _ _)
-     (define old-val (chip-8-reg-v-ref c X))
-     (define new-val (bitwise-and (+ old-val NN) #xFF))
-     (chip-8-reg-v-set! c X new-val)]
-    ; 8XY0 Store the value of register VY in register VX
-    [(list #x8 _ _ #x0) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y))]
-    ; 8XY1 Set VX to VX OR VY
-    [(list #x8 _ _ #x1)
-     (chip-8-reg-v-set! c X (bitwise-ior (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
-     (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
-    ; 8XY2 Set VX to VX AND VY
-    [(list #x8 _ _ #x2)
-     (chip-8-reg-v-set! c X (bitwise-and (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
-     (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
-    ; 8XY3 Set VX to VX XOR VY
-    [(list #x8 _ _ #x3)
-     (chip-8-reg-v-set! c X (bitwise-xor (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
-     (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
-    ; 8XY4 Add the value of register VY to register VX
-    ;      Set VF to 01 if a carry occurs
-    ;      Set VF to 00 if a carry does not occur
-    [(list #x8 _ _ #x4)
-     (define sum (+ (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
-     (chip-8-reg-v-set! c X (bitwise-and sum #xFF))
-     (chip-8-reg-v-set! c #xF (if (> sum #xFF) 1 0))]
-    ; 8XY5 Subtract the value of register VY from register VX
-    ;      Set VF to 00 if a borrow occurs
-    ;      Set VF to 01 if a borrow does not occur
-    [(list #x8 _ _ #x5)
-     (define diff (- (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
-     (chip-8-reg-v-set! c X (bitwise-and diff #xFF))
-     (chip-8-reg-v-set! c #xF (if (negative? diff) 0 1))]
-    ; 8XY6 Store the value of register VY shifted right one bit in register VX.
-    ;      Set register VF to the least significant bit prior to the shift;
-    ;      VY is unchanged
-    [(list #x8 _ _ #x6)
-     (when (shifts-use-vy?) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y)))
-     (define vx (chip-8-reg-v-ref c X))
-     (define new-vf (bitwise-and vx 1))
-     (chip-8-reg-v-set! c X (arithmetic-shift vx -1))
-     (chip-8-reg-v-set! c #xF new-vf)]
-    ; 8XY7 Set register VX to the value of VY minus VX
-    ;      Set VF to 00 if a borrow occurs
-    ;      Set VF to 01 if a borrow does not occur
-    [(list #x8 _ _ #x7)
-     (define diff (- (chip-8-reg-v-ref c Y) (chip-8-reg-v-ref c X)))
-     (chip-8-reg-v-set! c X (bitwise-and diff #xFF))
-     (chip-8-reg-v-set! c #xF (if (negative? diff) 0 1))]
-    ; 8XYE Shift VY left into VX, or shift VX in place in compatibility mode.
-    ;      Set VF to the most significant bit prior to the shift;
-    ;      VY is unchanged
-    [(list #x8 _ _ #xE)
-     (when (shifts-use-vy?) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y)))
-     (define shifted (arithmetic-shift (chip-8-reg-v-ref c X) 1))
-     (chip-8-reg-v-set! c X (bitwise-and shifted #xFF))
-     (chip-8-reg-v-set! c #xF (arithmetic-shift shifted -8))]
-    ; 9XY0 Skip the following instruction if the value of register VX is not equal to the value of register VY
-    [(list #x9 _ _ #x0)
-     (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y))
-       (skip! c))]
-    ; ANNN Store memory address NNN in register I
-    [(list #xA _ _ _) (set-chip-8-i! c NNN)]
-    ; BNNN Jump to address NNN + V0, or NNN + VX in compatibility mode
-    [(list #xB _ _ _)
-     (set-chip-8-pc! c (+ NNN (chip-8-reg-v-ref c (if (jump-uses-vx?) X #x0))))]
-    ; CXNN Set VX to a random number with a mask of NN
-    [(list #xC _ _ _) (chip-8-reg-v-set! c X (bitwise-and (random #x100) NN))]
-    ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
-    ;      starting at the address stored in I.  Set VF to 01 if any set
-    ;      pixels are changed to unset, and 00 otherwise
-    [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
-    ; EX9E Skip the following instruction if the key corresponding to the hex value
-    ;      currently stored in register VX is pressed
-    [(list #xE _ #x9 #xE)
-     (when (chip-8-key-held? c (chip-8-reg-v-ref c X)) (skip! c))]
-    ; EXA1 Skip the following instruction if the key corresponding to the hex value
-    ;      currently stored in register VX is not pressed
-    [(list #xE _ #xA #x1)
-     (unless (chip-8-key-held? c (chip-8-reg-v-ref c X)) (skip! c))]
-    ; FX07 Store the current value of the delay timer in register VX
-    [(list #xF _ #x0 #x7) (chip-8-reg-v-set! c X (chip-8-delay-timer c))]
-    ; FX0A Wait for a keypress and store the result in register VX
-    [(list #xF _ #x0 #xA)
-     (define key (chip-8-pending-keypress c))
-     (if key (chip-8-reg-v-set! c X key) (skip! c -1))]
-    ; FX15 Set the delay timer to the value of register VX
-    [(list #xF _ #x1 #x5) (set-chip-8-delay-timer! c (chip-8-reg-v-ref c X))]
-    ; FX18 Set the sound timer to the value of register VX
-    [(list #xF _ #x1 #x8) (set-chip-8-sound-timer! c (chip-8-reg-v-ref c X))]
-    ; FX1E Add the value stored in register VX to register I
-    [(list #xF _ #x1 #xE)
-     (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
-     (set-chip-8-i! c new-i)
-     (when (fx1e-sets-vf?) (chip-8-reg-v-set! c #xF (if (> new-i #xFFF) 1 0)))]
-    ; FX29 Set I to the memory address of the sprite data corresponding to
-    ;      the hexadecimal digit stored in register VX
-    [(list #xF _ #x2 #x9)
-     (set-chip-8-i! c
-                    (+ font-address
-                       (* font-size (chip-8-reg-v-ref c X))))]
-    ; FX33 Store the binary-coded decimal equivalent of the value stored in
-    ;      register VX at addresses I, I + 1, and I + 2
-    [(list #xF _ #x3 #x3)
-     (define mem (chip-8-memory c))
-     (define i (chip-8-i c))
-     (define vx (chip-8-reg-v-ref c X))
-     (for ([j (in-naturals)] [k (in-list '(2 1 0))])
-       (define power (expt 10 j))
-       (bytes-set! mem (+ i k) (remainder (quotient vx power) 10)))]
-    ; FX55 Store registers V0 through VX inclusive in memory starting at I.
-    ;      Depending on compatibility mode, increment I by X + 1 afterward
-    [(list #xF _ #x5 #x5)
-     (define mem (chip-8-memory c))
-     (define i (chip-8-i c))
-     (for ([j (in-inclusive-range 0 X)])
-       (bytes-set! mem (+ i j) (chip-8-reg-v-ref c j)))
-     (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
-    ; FX65 Fill registers V0 to VX inclusive with the values stored in memory
-    ;      starting at address I. Depending on compatibility mode, increment I
-    ;      by X + 1 after the operation
-    [(list #xF _ #x6 #x5)
-     (define mem (chip-8-memory c))
-     (define i (chip-8-i c))
-     (for ([j (in-inclusive-range 0 X)])
-       (chip-8-reg-v-set! c j (bytes-ref mem (+ i j))))
-     (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
+  ; Returns 'waiting-key while an incomplete FX0A blocks the CPU and
+  ; 'executed otherwise; existing callers may ignore the result.
+  (cond
+    ; An incomplete FX0A blocks fetch, decode, and execute; the PC has
+    ; already advanced past the FX0A once and must not move again.
+    [(chip-8-waiting-key-register c) 'waiting-key]
     [else
-     (error (string-append "Unknown opcode 0x"
-                           (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
-  ;; FX0A consumes a pending keypress; every other instruction discards it.
-  (set-chip-8-pending-keypress! c #f))
+     ;; FETCH
+     (define opcode (fetch-opcode c))
+     (skip! c)
+     ;; DECODE & EXECUTE
+     (match-define (list family X Y N NN NNN) (decompose-opcode opcode))
+     ;; https://github.com/mattmikolay/chip-8/wiki/CHIP%E2%80%908-Instruction-Set
+     (match (list family X Y N)
+      ; 00E0 Clear the screen
+      [(list #x0 #x0 #xE #x0) (bytes-fill! (chip-8-framebuffer c) 0) (request-redraw)]
+      ; 00EE Return from a subroutine
+      [(list #x0 #x0 #xE #xE) (set-chip-8-pc! c (chip-8-stack-pop! c))]
+      ; 0NNN Execute machine language subroutine - unsupported by this emulator
+      [(list #x0 _ _ _) (error "Subroutines written in machine language are unsupported")]
+      ; 1NNN Jump to address NNN
+      [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
+      ; 2NNN Execute subroutine starting at address NNN
+      [(list #x2 _ _ _) (chip-8-stack-push! c (chip-8-pc c)) (set-chip-8-pc! c NNN)]
+      ; 3XNN Skip the following instruction if the value of register VX equals NN
+      [(list #x3 _ _ _) (when (= (chip-8-reg-v-ref c X) NN) (skip! c))]
+      ; 4XNN Skip the following instruction if the value of register VX is not equal to NN
+      [(list #x4 _ _ _) (unless (= (chip-8-reg-v-ref c X) NN) (skip! c))]
+      ; 5XY0 Skip the following instruction if the value of register VX is equal to the value of register VY
+      [(list #x5 _ _ #x0)
+       (when (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y))
+         (skip! c))]
+      ; 6XNN Store number NN in register VX
+      [(list #x6 _ _ _) (chip-8-reg-v-set! c X NN)]
+      ; 7XNN Add the value NN to register VX
+      [(list #x7 _ _ _)
+       (define old-val (chip-8-reg-v-ref c X))
+       (define new-val (bitwise-and (+ old-val NN) #xFF))
+       (chip-8-reg-v-set! c X new-val)]
+      ; 8XY0 Store the value of register VY in register VX
+      [(list #x8 _ _ #x0) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y))]
+      ; 8XY1 Set VX to VX OR VY
+      [(list #x8 _ _ #x1)
+       (chip-8-reg-v-set! c X (bitwise-ior (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+       (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
+      ; 8XY2 Set VX to VX AND VY
+      [(list #x8 _ _ #x2)
+       (chip-8-reg-v-set! c X (bitwise-and (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+       (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
+      ; 8XY3 Set VX to VX XOR VY
+      [(list #x8 _ _ #x3)
+       (chip-8-reg-v-set! c X (bitwise-xor (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+       (when (logic-ops-clear-vf?) (chip-8-reg-v-set! c #xF #x00))]
+      ; 8XY4 Add the value of register VY to register VX
+      ;      Set VF to 01 if a carry occurs
+      ;      Set VF to 00 if a carry does not occur
+      [(list #x8 _ _ #x4)
+       (define sum (+ (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+       (chip-8-reg-v-set! c X (bitwise-and sum #xFF))
+       (chip-8-reg-v-set! c #xF (if (> sum #xFF) 1 0))]
+      ; 8XY5 Subtract the value of register VY from register VX
+      ;      Set VF to 00 if a borrow occurs
+      ;      Set VF to 01 if a borrow does not occur
+      [(list #x8 _ _ #x5)
+       (define diff (- (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y)))
+       (chip-8-reg-v-set! c X (bitwise-and diff #xFF))
+       (chip-8-reg-v-set! c #xF (if (negative? diff) 0 1))]
+      ; 8XY6 Store the value of register VY shifted right one bit in register VX.
+      ;      Set register VF to the least significant bit prior to the shift;
+      ;      VY is unchanged
+      [(list #x8 _ _ #x6)
+       (when (shifts-use-vy?) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y)))
+       (define vx (chip-8-reg-v-ref c X))
+       (define new-vf (bitwise-and vx 1))
+       (chip-8-reg-v-set! c X (arithmetic-shift vx -1))
+       (chip-8-reg-v-set! c #xF new-vf)]
+      ; 8XY7 Set register VX to the value of VY minus VX
+      ;      Set VF to 00 if a borrow occurs
+      ;      Set VF to 01 if a borrow does not occur
+      [(list #x8 _ _ #x7)
+       (define diff (- (chip-8-reg-v-ref c Y) (chip-8-reg-v-ref c X)))
+       (chip-8-reg-v-set! c X (bitwise-and diff #xFF))
+       (chip-8-reg-v-set! c #xF (if (negative? diff) 0 1))]
+      ; 8XYE Shift VY left into VX, or shift VX in place in compatibility mode.
+      ;      Set VF to the most significant bit prior to the shift;
+      ;      VY is unchanged
+      [(list #x8 _ _ #xE)
+       (when (shifts-use-vy?) (chip-8-reg-v-set! c X (chip-8-reg-v-ref c Y)))
+       (define shifted (arithmetic-shift (chip-8-reg-v-ref c X) 1))
+       (chip-8-reg-v-set! c X (bitwise-and shifted #xFF))
+       (chip-8-reg-v-set! c #xF (arithmetic-shift shifted -8))]
+      ; 9XY0 Skip the following instruction if the value of register VX is not equal to the value of register VY
+      [(list #x9 _ _ #x0)
+       (unless (= (chip-8-reg-v-ref c X) (chip-8-reg-v-ref c Y))
+         (skip! c))]
+      ; ANNN Store memory address NNN in register I
+      [(list #xA _ _ _) (set-chip-8-i! c NNN)]
+      ; BNNN Jump to address NNN + V0, or NNN + VX in compatibility mode
+      [(list #xB _ _ _)
+       (set-chip-8-pc! c (+ NNN (chip-8-reg-v-ref c (if (jump-uses-vx?) X #x0))))]
+      ; CXNN Set VX to a random number with a mask of NN
+      [(list #xC _ _ _) (chip-8-reg-v-set! c X (bitwise-and (random #x100) NN))]
+      ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
+      ;      starting at the address stored in I.  Set VF to 01 if any set
+      ;      pixels are changed to unset, and 00 otherwise
+      [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
+      ; EX9E Skip the following instruction if the key corresponding to the hex value
+      ;      currently stored in register VX is pressed
+      [(list #xE _ #x9 #xE)
+       (when (chip-8-key-held? c (chip-8-reg-v-ref c X)) (skip! c))]
+      ; EXA1 Skip the following instruction if the key corresponding to the hex value
+      ;      currently stored in register VX is not pressed
+      [(list #xE _ #xA #x1)
+       (unless (chip-8-key-held? c (chip-8-reg-v-ref c X)) (skip! c))]
+      ; FX07 Store the current value of the delay timer in register VX
+      [(list #xF _ #x0 #x7) (chip-8-reg-v-set! c X (chip-8-delay-timer c))]
+      ; FX0A Wait for a keypress and store the result in register VX
+      ;      Halt with the PC just past this opcode until a key is pressed
+      ;      and released again; the release stores the key number in VX
+      [(list #xF _ #x0 #xA)
+       (define key (chip-8-pending-keypress c))
+       (set-chip-8-pending-keypress! c #f)
+       (set-chip-8-waiting-key-register! c X)
+       (cond
+         [(and key (chip-8-key-held? c key))
+          ; the key is still down; finish the wait when it is released
+          (set-chip-8-waiting-key-value! c key)]
+         [key
+          ; the whole press/release transition already happened
+          (chip-8-reg-v-set! c X key)
+          (set-chip-8-waiting-key-register! c #f)]
+         [else (void)])]
+      ; FX15 Set the delay timer to the value of register VX
+      [(list #xF _ #x1 #x5) (set-chip-8-delay-timer! c (chip-8-reg-v-ref c X))]
+      ; FX18 Set the sound timer to the value of register VX
+      [(list #xF _ #x1 #x8) (set-chip-8-sound-timer! c (chip-8-reg-v-ref c X))]
+      ; FX1E Add the value stored in register VX to register I
+      [(list #xF _ #x1 #xE)
+       (define new-i (+ (chip-8-i c) (chip-8-reg-v-ref c X)))
+       (set-chip-8-i! c new-i)
+       (when (fx1e-sets-vf?) (chip-8-reg-v-set! c #xF (if (> new-i #xFFF) 1 0)))]
+      ; FX29 Set I to the memory address of the sprite data corresponding to
+      ;      the hexadecimal digit stored in register VX
+      [(list #xF _ #x2 #x9)
+       (set-chip-8-i! c
+                      (+ font-address
+                         (* font-size (chip-8-reg-v-ref c X))))]
+      ; FX33 Store the binary-coded decimal equivalent of the value stored in
+      ;      register VX at addresses I, I + 1, and I + 2
+      [(list #xF _ #x3 #x3)
+       (define mem (chip-8-memory c))
+       (define i (chip-8-i c))
+       (define vx (chip-8-reg-v-ref c X))
+       (for ([j (in-naturals)] [k (in-list '(2 1 0))])
+         (define power (expt 10 j))
+         (bytes-set! mem (+ i k) (remainder (quotient vx power) 10)))]
+      ; FX55 Store registers V0 through VX inclusive in memory starting at I.
+      ;      Depending on compatibility mode, increment I by X + 1 afterward
+      [(list #xF _ #x5 #x5)
+       (define mem (chip-8-memory c))
+       (define i (chip-8-i c))
+       (for ([j (in-inclusive-range 0 X)])
+         (bytes-set! mem (+ i j) (chip-8-reg-v-ref c j)))
+       (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
+      ; FX65 Fill registers V0 to VX inclusive with the values stored in memory
+      ;      starting at address I. Depending on compatibility mode, increment I
+      ;      by X + 1 after the operation
+      [(list #xF _ #x6 #x5)
+       (define mem (chip-8-memory c))
+       (define i (chip-8-i c))
+       (for ([j (in-inclusive-range 0 X)])
+         (chip-8-reg-v-set! c j (bytes-ref mem (+ i j))))
+       (when (load-store-increments-i?) (set-chip-8-i! c (+ i X 1)))]
+      [else
+       (error (string-append "Unknown opcode 0x"
+                             (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
+    ;; FX0A leaves an active wait in place; every other opcode ran to
+    ;; completion.
+    (if (chip-8-waiting-key-register c) 'waiting-key 'executed)]))
 
 (define test-rom
   (bytes #x00 #xE0 ; clear screen
@@ -959,74 +997,139 @@
              (step released-chip)
              (check-eq? (chip-8-pc released-chip) (+ load-address 4)))
 
-  (test-case "FX0A waits at the same instruction when no key was pressed"
+  (test-case "FX0A advances once and blocks until a key is pressed"
              (define chip (make-chip-8))
              (load-rom! chip (bytes #xFA #x0A))
              (chip-8-reg-v-set! chip #xA #x42)
 
-             (step chip)
-
-             (check-eq? (chip-8-pc chip) load-address)
-             (check-eq? (chip-8-reg-v-ref chip #xA) #x42))
-
-  (test-case "FX0A stores a newly pressed key and continues"
-             (define chip (make-chip-8))
-             (load-rom! chip (bytes #xFA #x0A))
-             (chip-8-key-pressed! chip #xB)
-
-             (step chip)
-
+             (check-eq? (step chip) 'waiting-key)
              (check-eq? (chip-8-pc chip) (+ load-address 2))
-             (check-eq? (chip-8-reg-v-ref chip #xA) #xB)
-             (check-false (chip-8-pending-keypress chip)))
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x42)
 
-  (test-case "FX0A accepts CHIP-8 key zero"
+             ; repeated steps must not move the PC or fetch another opcode
+             (check-eq? (step chip) 'waiting-key)
+             (check-eq? (chip-8-pc chip) (+ load-address 2)))
+
+  (test-case "a press survives unrelated opcodes before FX0A"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #x60 #x01 ; V0 = 1
+                                    #x61 #x02 ; V1 = 2
+                                    #xF2 #x0A))
+             (chip-8-key-pressed! chip #x5)
+
+             (step chip) ; V0 = 1, must not discard the press
+             (step chip) ; V1 = 2
+             (check-eq? (step chip) 'waiting-key)
+             (check-eq? (chip-8-pending-keypress chip) #f)
+             (check-eq? (chip-8-waiting-key-value chip) #x5)
+
+             (chip-8-key-released! chip #x5)
+             (check-eq? (chip-8-reg-v-ref chip #x2) #x5)
+             (check-false (chip-8-waiting-key-register chip)))
+
+  (test-case "a press while FX0A is blocked does not resume until release"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xF1 #x0A
+                                    #x62 #xEE)) ; V2 = 0xEE marks execution
+             (chip-8-reg-v-set! chip #x2 #x00)
+
+             (step chip) ; FX0A starts waiting
+             (chip-8-key-pressed! chip #x5)
+             (check-eq? (step chip) 'waiting-key)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x00)
+             (check-eq? (chip-8-pc chip) (+ load-address 2))
+
+             (chip-8-key-released! chip #x5)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x5)
+             ; the next step, not the release callback, resumes execution
+             (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #x2) #xEE)
+             (check-eq? (chip-8-pc chip) (+ load-address 4)))
+
+  (test-case "FX0A stores CHIP-8 key zero on release"
              (define chip (make-chip-8))
              (load-rom! chip (bytes #xFA #x0A))
              (chip-8-key-pressed! chip #x0)
 
              (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x00)
 
-             (check-eq? (chip-8-pc chip) (+ load-address 2))
-             (check-eq? (chip-8-reg-v-ref chip #xA) #x0))
+             (chip-8-key-released! chip #x0)
+             (check-eq? (chip-8-reg-v-ref chip #xA) #x00)
+             (check-false (chip-8-waiting-key-register chip)))
 
-  (test-case "A held key's auto-repeat does not create another keypress"
+  (test-case "another key's release does not complete the FX0A wait"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xF1 #x0A))
+
+             (step chip)
+             (chip-8-key-pressed! chip #x5) ; latched for FX0A
+             (step chip)                    ; still waiting for key 5
+             (chip-8-key-pressed! chip #x7) ; unrelated press mid-wait
+             (chip-8-key-released! chip #x7)
+             (check-eq? (step chip) 'waiting-key)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x00)
+
+             (chip-8-key-released! chip #x5)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x5))
+
+  (test-case "a held key's auto-repeat does not produce a second keypress"
              (define chip (make-chip-8))
              (load-rom! chip (bytes #xF1 #x0A
                                     #xF2 #x0A))
              (chip-8-key-pressed! chip #x5)
-             (step chip)
 
-             (chip-8-key-pressed! chip #x5)
-             (check-false (chip-8-pending-keypress chip))
-             (step chip)
-
+             (step chip)                   ; V1's FX0A latches key 5
+             (chip-8-key-pressed! chip #x5) ; auto-repeat while held
+             (chip-8-key-released! chip #x5)
              (check-eq? (chip-8-reg-v-ref chip #x1) #x5)
-             (check-eq? (chip-8-pc chip) (+ load-address 2)))
 
-  (test-case "A key release does not satisfy FX0A"
+             ; V2's FX0A finds no new press and blocks
+             (check-eq? (step chip) 'waiting-key)
+             (check-eq? (chip-8-reg-v-ref chip #x2) #x00)
+             (check-eq? (chip-8-pc chip) (+ load-address 4)))
+
+  (test-case "a completed press and release is consumed once by FX0A"
              (define chip (make-chip-8))
-             (load-rom! chip (bytes #x60 #x00
+             (load-rom! chip (bytes #x00 #xE0 ; unrelated first opcode
                                     #xF1 #x0A))
              (chip-8-key-pressed! chip #x5)
-             (step chip) ; discard the press before FX0A starts waiting
              (chip-8-key-released! chip #x5)
 
+             (step chip) ; the unrelated opcode must retain the press
+             (check-eq? (chip-8-pending-keypress chip) #x5)
+
              (step chip)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x5)
+             (check-eq? (chip-8-pc chip) (+ load-address 4))
+             (check-false (chip-8-pending-keypress chip))
+             (check-false (chip-8-waiting-key-register chip)))
 
-             (check-eq? (chip-8-pc chip) (+ load-address 2))
-             (check-eq? (chip-8-reg-v-ref chip #x1) #x0))
-
-  (test-case "load-rom resets held keys and pending keypresses"
+  (test-case "load-rom clears held keys and all key-wait state"
              (define chip (make-chip-8))
-             (load-rom! chip minimal-rom)
-             (chip-8-key-pressed! chip #x0)
+             (load-rom! chip (bytes #xF1 #x0A))
+             (step chip)
              (chip-8-key-pressed! chip #x5)
+             (chip-8-key-pressed! chip #x3)
 
              (load-rom! chip minimal-rom)
 
              (check-equal? (chip-8-keypad chip) (make-vector 16 #f))
-             (check-false (chip-8-pending-keypress chip)))
+             (check-false (chip-8-pending-keypress chip))
+             (check-false (chip-8-waiting-key-register chip))
+             (check-false (chip-8-waiting-key-value chip)))
+
+  (test-case "tick keeps decrementing timers while FX0A blocks the CPU"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xF1 #x0A))
+             (step chip)
+             (set-chip-8-delay-timer! chip 2)
+             (set-chip-8-sound-timer! chip 2)
+
+             (tick! chip)
+
+             (check-eq? (chip-8-delay-timer chip) 1)
+             (check-eq? (chip-8-sound-timer chip) 1))
 
   (test-case "FX07 stores the delay timer in VX"
              (define chip (make-chip-8))
