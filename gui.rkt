@@ -13,10 +13,11 @@
                 logic-ops-clear-vf?
                 shifts-use-vy?
                 jump-uses-vx?
-                sprites-wrap?)
+                sprites-wrap?
+                draw-waits-for-vblank?)
   #:transparent #:mutable)
 
-(define settings (compat #f 'increment-x+1 #t #t #f #f))
+(define settings (compat #f 'increment-x+1 #t #t #f #f #f))
 
 (define chip (make-chip-8))
 
@@ -99,7 +100,8 @@
                          [logic-ops-clear-vf? (compat-logic-ops-clear-vf? settings)]
                          [shifts-use-vy? (compat-shifts-use-vy? settings)]
                          [jump-uses-vx? (compat-jump-uses-vx? settings)]
-                         [sprites-wrap? (compat-sprites-wrap? settings)])
+                         [sprites-wrap? (compat-sprites-wrap? settings)]
+                         [draw-waits-for-vblank? (compat-draw-waits-for-vblank? settings)])
             (for ([_ (in-range (quotient opcodes/second ticks/second))])
               (step chip (λ () (set! refresh-requested? #t)))))
           (when refresh-requested? (send canvas refresh-now))
@@ -204,6 +206,15 @@
       (λ (box _event)
         (set-compat-sprites-wrap?! settings
                                    (send box get-value)))])
+
+(new check-box%
+     [parent settings-panel]
+     [label "Draws wait for vertical blank (one per frame)"]
+     [value (compat-draw-waits-for-vblank? settings)]
+     [callback
+      (λ (box _event)
+        (set-compat-draw-waits-for-vblank?! settings
+                                            (send box get-value)))])
 
 (new menu-item%
      [label "&Settings..."]

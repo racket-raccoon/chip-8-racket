@@ -14,11 +14,13 @@
          logic-ops-clear-vf?
          shifts-use-vy?
          jump-uses-vx?
-         sprites-wrap?)
+         sprites-wrap?
+         draw-waits-for-vblank?)
 
 (struct chip-8
   (memory pc i reg-v stack sp framebuffer delay-timer sound-timer keypad
-          pending-keypress waiting-key-register waiting-key-value)
+          pending-keypress waiting-key-register waiting-key-value
+          draw-permitted?)
   #:transparent #:mutable)
 
 (define memory-size #x1000)
@@ -52,6 +54,9 @@
 ; CHIP-8 sprites clip at the right and bottom screen edges. CHIP-48 and
 ; SUPER-CHIP instead draw every sprite pixel modulo the screen dimensions.
 (define sprites-wrap? (make-parameter #f))
+; The original COSMAC VIP waits for vertical blank at DXYN, so at most one
+; sprite draws per 60 Hz display frame. Modern interpreters draw freely.
+(define draw-waits-for-vblank? (make-parameter #f))
 
 ; FX55 and FX65 both update I with this one rule; 'unchanged falls through.
 (define (update-i-after-load-store! c x)
@@ -89,7 +94,9 @@
    ; register index of an active FX0A, or #f while no FX0A is waiting
    #f
    ; key latched by an active FX0A whose release is still awaited, or #f
-   #f))
+   #f
+   ; one draw permit for vblank mode; a 60 Hz tick grants a fresh one
+   #t))
 
 (define (chip-8-reg-v-ref c x) (bytes-ref (chip-8-reg-v c) x))
 (define (chip-8-reg-v-set! c x val) (bytes-set! (chip-8-reg-v c) x val))
@@ -184,14 +191,20 @@
   (vector-fill! (chip-8-keypad c) #f)
   (set-chip-8-pending-keypress! c #f)
   (set-chip-8-waiting-key-register! c #f)
-  (set-chip-8-waiting-key-value! c #f))
+  (set-chip-8-waiting-key-value! c #f)
+  (set-chip-8-draw-permitted?! c #t))
 
-(define (fetch-opcode c)
+; Read the opcode at the PC without advancing it, so callers can decide
+; whether an instruction may execute at all.
+(define (peek-opcode c)
   (define mem (chip-8-memory c))
   (define pc (chip-8-pc c))
-  (define high (bytes-ref mem pc))
-  (define low (bytes-ref mem (add1 pc)))
-  (bitwise-ior (arithmetic-shift high 8) low))
+  (bitwise-ior (arithmetic-shift (bytes-ref mem pc) 8)
+               (bytes-ref mem (add1 pc))))
+
+(define (fetch-opcode c)
+  (bitwise-ior (arithmetic-shift (bytes-ref (chip-8-memory c) (chip-8-pc c)) 8)
+               (bytes-ref (chip-8-memory c) (add1 (chip-8-pc c)))))
 
 (define (decompose-opcode opcode)
   ;; 0x [family] X Y N
@@ -242,6 +255,9 @@
 (define (skip! c [n 1]) (set-chip-8-pc! c (+ (* 2 n) (chip-8-pc c))))
 
 (define (tick! c [beep void])
+  ; Each 60 Hz frame grants one fresh draw permit; permits never
+  ; accumulate beyond one, so missed frames are not future draw budget.
+  (set-chip-8-draw-permitted?! c #t)
   (define delay-timer (chip-8-delay-timer c))
   (unless (zero? delay-timer)
     (set-chip-8-delay-timer! c (sub1 delay-timer)))
@@ -251,12 +267,19 @@
     (set-chip-8-sound-timer! c (sub1 sound-timer))))
 
 (define (step c [request-redraw void])
-  ; Returns 'waiting-key while an incomplete FX0A blocks the CPU and
-  ; 'executed otherwise; existing callers may ignore the result.
+  ; Returns 'waiting-key while an incomplete FX0A blocks the CPU,
+  ; 'waiting-vblank while a vblank-gated draw blocks it, and 'executed
+  ; otherwise; existing callers may ignore the result.
   (cond
     ; An incomplete FX0A blocks fetch, decode, and execute; the PC has
     ; already advanced past the FX0A once and must not move again.
     [(chip-8-waiting-key-register c) 'waiting-key]
+    ; A vblank-gated draw with no permit blocks before PC += 2 is
+    ; committed, so no rewind is needed when the frame tick arrives.
+    [(and (draw-waits-for-vblank?)
+          (not (chip-8-draw-permitted? c))
+          (= (arithmetic-shift (peek-opcode c) -12) #xD))
+     'waiting-vblank]
     [else
      ;; FETCH
      (define opcode (fetch-opcode c))
@@ -356,7 +379,11 @@
       ; DXYN Draw a sprite at position VX, VY with N bytes of sprite data
       ;      starting at the address stored in I.  Set VF to 01 if any set
       ;      pixels are changed to unset, and 00 otherwise
-      [(list #xD _ _ _) (chip-8-draw-sprite! c X Y N) (request-redraw)]
+      [(list #xD _ _ _)
+       ; In vblank mode this draw consumes the frame's single permit
+       (when (draw-waits-for-vblank?) (set-chip-8-draw-permitted?! c #f))
+       (chip-8-draw-sprite! c X Y N)
+       (request-redraw)]
       ; EX9E Skip the following instruction if the key corresponding to the hex value
       ;      currently stored in register VX is pressed
       [(list #xE _ #x9 #xE)
@@ -428,9 +455,9 @@
       [else
        (error (string-append "Unknown opcode 0x"
                              (~r opcode #:base 16 #:min-width 4 #:pad-string "0")))])
-    ;; FX0A leaves an active wait in place; every other opcode ran to
-    ;; completion.
-    (if (chip-8-waiting-key-register c) 'waiting-key 'executed)]))
+     ;; FX0A leaves an active wait in place; every other opcode ran to
+     ;; completion.
+     (if (chip-8-waiting-key-register c) 'waiting-key 'executed)]))
 
 (define test-rom
   (bytes #x00 #xE0 ; clear screen
@@ -1064,6 +1091,80 @@
 
              (check-eq? (chip-8-reg-v-ref chip #xF) 1)
              (check-eq? (chip-8-pixel-ref chip 0 0) 0))
+
+  (test-case "vblank mode draws at most once per 60 Hz tick"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12 ; first draw
+                                    #xD0 #x12 ; second draw
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 4))
+             (define redraw-count 0)
+
+             (parameterize ([draw-waits-for-vblank? #t])
+               (check-eq? (step chip (lambda () (set! redraw-count (add1 redraw-count))))
+                          'executed)
+               (check-eq? (chip-8-pc chip) (+ load-address 2))
+
+               ; the second draw has no frame permit left
+               (check-eq? (step chip (lambda () (set! redraw-count (add1 redraw-count))))
+                          'waiting-vblank)
+               (check-eq? (chip-8-pc chip) (+ load-address 2))
+               (check-eq? redraw-count 1)
+
+               ; the 60 Hz tick grants a fresh permit and the draw runs
+               (tick! chip)
+               (check-eq? (step chip (lambda () (set! redraw-count (add1 redraw-count))))
+                          'executed)
+               (check-eq? (chip-8-pc chip) (+ load-address 4))
+               (check-eq? redraw-count 2)))
+
+  (test-case "vblank permits do not accumulate across idle frames"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12 ; first draw
+                                    #xD0 #x12 ; second draw
+                                    #xD0 #x12 ; third draw
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 6))
+
+             (parameterize ([draw-waits-for-vblank? #t])
+               (step chip)
+               (tick! chip)
+               (tick! chip) ; an idle frame does not bank a second permit
+               (step chip)  ; the second draw uses the one fresh permit
+               (check-eq? (step chip) 'waiting-vblank)
+               (check-eq? (chip-8-pc chip) (+ load-address 4))))
+
+  (test-case "unrelated opcodes between draws still execute in vblank mode"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12 ; draw
+                                    #x60 #x01 ; V0 = 1
+                                    #xD0 #x12 ; second draw
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 6))
+
+             (parameterize ([draw-waits-for-vblank? #t])
+               (check-eq? (step chip) 'executed)
+               (check-eq? (step chip) 'executed)
+               (check-eq? (chip-8-reg-v-ref chip #x0) #x01)
+               (check-eq? (step chip) 'waiting-vblank)
+               (check-eq? (chip-8-pc chip) (+ load-address 4))))
+
+  (test-case "drawing twice in one frame needs no permit by default"
+             (define chip (make-chip-8))
+             (load-rom! chip (bytes #xD0 #x12
+                                    #xD0 #x12
+                                    #xC0
+                                    #xC0))
+             (set-chip-8-i! chip (+ load-address 4))
+
+             (check-eq? (step chip) 'executed)
+             (check-eq? (step chip) 'executed)
+             (check-eq? (chip-8-pc chip) (+ load-address 4))
+             ; the second draw XORs the first away, and VF reports it
+             (check-eq? (chip-8-reg-v-ref chip #xF) 1))
 
   (test-case "EX9E skips only when the key in VX is held"
              (define held-chip (make-chip-8))
