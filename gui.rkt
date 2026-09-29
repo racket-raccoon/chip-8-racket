@@ -1,12 +1,14 @@
 #lang racket/gui
 
-(require "emu.rkt")
+(require "emu.rkt"
+         "scheduler.rkt")
 
 (define scale-factor 10)
 
-(define ticks/second 60)
 (define opcodes/second 1800)
-(define ms/tick (quotient 1000 ticks/second))
+; The GUI timer only wakes the scheduler up; emulated time comes from
+; the monotonic clock inside scheduler-run
+(define scheduler-poll-ms 8)
 
 (struct compat (fx1e-sets-vf?
                 load-store-i-mode
@@ -90,6 +92,8 @@
 (send canvas min-client-width (* screen-width scale-factor))
 (send canvas min-client-height (* screen-height scale-factor))
 
+(define scheduler (make-scheduler opcodes/second))
+
 (define timer
   (new timer%
        [notify-callback
@@ -102,10 +106,11 @@
                          [jump-uses-vx? (compat-jump-uses-vx? settings)]
                          [sprites-wrap? (compat-sprites-wrap? settings)]
                          [draw-waits-for-vblank? (compat-draw-waits-for-vblank? settings)])
-            (for ([_ (in-range (quotient opcodes/second ticks/second))])
-              (step chip (λ () (set! refresh-requested? #t)))))
-          (when refresh-requested? (send canvas refresh-now))
-          (tick! chip bell))]))
+            (scheduler-run scheduler
+                           (current-inexact-monotonic-milliseconds)
+                           (λ () (step chip (λ () (set! refresh-requested? #t))))
+                           (λ () (tick! chip bell))))
+          (when refresh-requested? (send canvas refresh-now)))]))
 
 (new menu-item%
      [label "&Load ROM..."]
@@ -126,8 +131,9 @@
         (when selected-path
           (define rom (file->bytes selected-path))
           (load-rom! chip rom)
+          (scheduler-rebase! scheduler)
           (send canvas refresh-now)
-          (send timer start ms/tick)))])
+          (send timer start scheduler-poll-ms)))])
 
 (define settings-dialog
   (new dialog%
