@@ -449,15 +449,11 @@
        (define key (chip-8-pending-keypress c))
        (set-chip-8-pending-keypress! c #f)
        (set-chip-8-waiting-key-register! c X)
-       (cond
-         [(and key (chip-8-key-held? c key))
-          ; the key is still down; finish the wait when it is released
-          (set-chip-8-waiting-key-value! c key)]
-         [key
-          ; the whole press/release transition already happened
-          (chip-8-reg-v-set! c X key)
-          (set-chip-8-waiting-key-register! c #f)]
-         [else (void)])]
+       ; A press that is still held counts: finish the wait on its
+       ; release. A press that was released before FX0A started is not
+       ; a new press, so only a later one satisfies the wait.
+       (when (and key (chip-8-key-held? c key))
+         (set-chip-8-waiting-key-value! c key))]
       ; FX15 Set the delay timer to the value of register VX
       [(list #xF _ #x1 #x5) (set-chip-8-delay-timer! c (chip-8-reg-v-ref c X))]
       ; FX18 Set the sound timer to the value of register VX
@@ -1351,7 +1347,7 @@
              (check-eq? (chip-8-reg-v-ref chip #x2) #x00)
              (check-eq? (chip-8-pc chip) (+ load-address 4)))
 
-  (test-case "a completed press and release is consumed once by FX0A"
+  (test-case "a press and release completed before FX0A does not satisfy it"
              (define chip (make-chip-8))
              (load-rom! chip (bytes #x00 #xE0 ; unrelated first opcode
                                     #xF1 #x0A))
@@ -1361,11 +1357,18 @@
              (step chip) ; the unrelated opcode must retain the press
              (check-eq? (chip-8-pending-keypress chip) #x5)
 
-             (step chip)
-             (check-eq? (chip-8-reg-v-ref chip #x1) #x5)
+             ; FX0A discards the stale transition and waits for a new
+             ; press, so the CPU stays blocked at the same opcode
+             (check-eq? (step chip) 'waiting-key)
              (check-eq? (chip-8-pc chip) (+ load-address 4))
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x00)
              (check-false (chip-8-pending-keypress chip))
-             (check-false (chip-8-waiting-key-register chip)))
+
+             ; a genuinely new press completes the wait on release
+             (chip-8-key-pressed! chip #x7)
+             (check-eq? (chip-8-waiting-key-value chip) #x7)
+             (chip-8-key-released! chip #x7)
+             (check-eq? (chip-8-reg-v-ref chip #x1) #x7))
 
   (test-case "load-rom clears held keys and all key-wait state"
              (define chip (make-chip-8))
