@@ -10,8 +10,12 @@ timed scheduler based on monotonic wall-clock time.
 You need a full Racket distribution (the program uses `racket/gui`).
 
 ```sh
-racket gui.rkt
+make        # compile the Racket modules
+make run    # compile if needed, then launch the GUI
 ```
+
+You can also launch directly with `racket gui.rkt`. Use `make clean` to remove
+Racket compilation artifacts.
 
 Load a ROM with **File > Load ROM...**; the `roms/` directory has a
 small library of public CHIP-8 programs and the vendored Timendus v4.2
@@ -100,7 +104,8 @@ the window stays open so you can load another ROM, reset, or restart.
 ## Tests
 
 ```sh
-raco test emu.rkt scheduler.rkt config.rkt
+make test
+# equivalent to: raco test emu.rkt scheduler.rkt config.rkt
 ```
 
 `emu.rkt` covers opcode semantics, the FX0A wait state, drawing quirks,
