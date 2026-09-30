@@ -1,12 +1,7 @@
-Non-default setup for particle.ch8
+Setup for particle.ch8
 
-Change the execution speed:
+Use the Original CHIP-8 preset (900 opcodes/second).
 
-  opcodes/second = 900
-
-Keep the current compatibility parameters. This hash matches zeroZshadow's
-2008 Particle Demo, classified as original CHIP-8. The platform default is
-15 opcodes per 60 Hz frame (900 per second).
-
-The original COSMAC VIP vblank wait is not configurable in this emulator,
-so the timing is approximate.
+This hash matches zeroZshadow's 2008 Particle Demo, classified as original
+CHIP-8. The preset includes the platform default of 15 opcodes per 60 Hz frame
+and the original COSMAC VIP vblank draw wait.

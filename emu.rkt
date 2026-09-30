@@ -142,16 +142,18 @@
   (define sp (chip-8-sp c))
   (if (zero? sp) #f (vector-ref stack (sub1 sp))))
 
-(define (chip-8-stack-push! c val)
+(define (chip-8-stack-push! c val [opcode #f])
   (define stack (chip-8-stack c))
   (define sp (chip-8-sp c))
-  (when (= sp stack-size) (chip-8-error c "Stack Overflow"))
+  (when (= sp stack-size)
+    (chip-8-error c "Stack Overflow" #:opcode opcode))
   (vector-set! stack sp val)
   (set-chip-8-sp! c (add1 sp)))
 
-(define (chip-8-stack-pop! c)
+(define (chip-8-stack-pop! c [opcode #f])
   (define sp (chip-8-sp c))
-  (when (zero? sp) (chip-8-error c "Stack Underflow"))
+  (when (zero? sp)
+    (chip-8-error c "Stack Underflow" #:opcode opcode))
   (define top (chip-8-stack-peek c))
   (vector-set! (chip-8-stack c) (sub1 sp) 0) ; optional
   (set-chip-8-sp! c (sub1 sp))
@@ -338,14 +340,17 @@
       ; 00E0 Clear the screen
       [(list #x0 #x0 #xE #x0) (bytes-fill! (chip-8-framebuffer c) 0) (request-redraw)]
       ; 00EE Return from a subroutine
-      [(list #x0 #x0 #xE #xE) (set-chip-8-pc! c (chip-8-stack-pop! c))]
+      [(list #x0 #x0 #xE #xE)
+       (set-chip-8-pc! c (chip-8-stack-pop! c opcode))]
       ; 0NNN Execute machine language subroutine - unsupported by this emulator
       [(list #x0 _ _ _)
        (chip-8-error c "machine-language subroutine" #:opcode opcode)]
       ; 1NNN Jump to address NNN
       [(list #x1 _ _ _) (set-chip-8-pc! c NNN)]
       ; 2NNN Execute subroutine starting at address NNN
-      [(list #x2 _ _ _) (chip-8-stack-push! c (chip-8-pc c)) (set-chip-8-pc! c NNN)]
+      [(list #x2 _ _ _)
+       (chip-8-stack-push! c (chip-8-pc c) opcode)
+       (set-chip-8-pc! c NNN)]
       ; 3XNN Skip the following instruction if the value of register VX equals NN
       [(list #x3 _ _ _) (when (= (chip-8-reg-v-ref c X) NN) (skip! c))]
       ; 4XNN Skip the following instruction if the value of register VX is not equal to NN
@@ -1759,4 +1764,27 @@
 
              (set-chip-8-pc! chip load-address) ; back onto 5XY1
              (check-exn #rx"Unknown opcode at PC 0x0202 \\(opcode 0x5AB1\\)"
-                        (lambda () (step chip)))))
+                        (lambda () (step chip))))
+
+  (test-case "stack instruction errors include their opcode"
+             (define underflow-chip (make-chip-8))
+             (load-rom! underflow-chip (bytes #x00 #xEE))
+             (define underflow-error
+               (with-handlers ([exn:chip-8? values])
+                 (step underflow-chip)
+                 (fail "00EE should fail with an empty stack")))
+             (check-eq? (exn:chip-8-opcode underflow-error) #x00EE)
+             (check-equal? (exn:chip-8-operation underflow-error)
+                           "Stack Underflow")
+
+             (define overflow-chip (make-chip-8))
+             (load-rom! overflow-chip (bytes #x22 #x00))
+             (for ([_ (in-range stack-size)])
+               (chip-8-stack-push! overflow-chip load-address))
+             (define overflow-error
+               (with-handlers ([exn:chip-8? values])
+                 (step overflow-chip)
+                 (fail "2NNN should fail with a full stack")))
+             (check-eq? (exn:chip-8-opcode overflow-error) #x2200)
+             (check-equal? (exn:chip-8-operation overflow-error)
+                           "Stack Overflow")))

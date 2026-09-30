@@ -1,18 +1,8 @@
-Non-default setup for stars.ch8
+Setup for stars.ch8
 
-Use the Super-CHIP 1.1 profile:
+Use the SUPER-CHIP 1.1 (quirks only) preset (1800 opcodes/second).
 
-  fx1e-sets-vf?            = #f
-  load-store-increments-i? = #f
-  logic-ops-clear-vf?      = #f
-  shifts-use-vy?           = #f
-  jump-uses-vx?            = #t
-
-And change the execution speed:
-
-  opcodes/second = 1800
-
-Why: this C8P Super-CHIP 1.1 demo expects FX55/FX65 to leave I unchanged.
-With the current #t setting, the star data is read from the wrong addresses
-and the display is reduced to a few stray pixels. Super-CHIP's database
-default is 30 opcodes per 60 Hz frame (1800 per second).
+This C8P SUPER-CHIP 1.1 demo expects FX55/FX65 to leave I unchanged. With an
+incrementing memory mode, star data is read from the wrong addresses and the
+display is reduced to a few stray pixels. The preset also uses SUPER-CHIP's
+database default of 30 opcodes per 60 Hz frame.

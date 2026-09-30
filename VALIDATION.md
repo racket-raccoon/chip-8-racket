@@ -11,10 +11,11 @@ racket gui.rkt                # then load a ROM through File > Load ROM...
 raco test emu.rkt scheduler.rkt config.rkt
 ```
 
-Screenshots and framebuffer dumps for every result below were captured
-under headless Xvfb with the `chip8-gui-xvfb` skill; the settings and
-key presses were applied through the same code paths the GUI uses
-(`with-compat`, `scheduler-set-speed!`, `chip-8-key-pressed!`).
+GUI screenshots were captured under headless Xvfb. Deterministic framebuffer
+runs used the same emulator, compatibility, scheduler, and key APIs as the GUI
+(`with-compat`, `scheduler-set-speed!`, and `chip-8-key-pressed!`). The ROM-load
+and lifecycle controls were also exercised through their production GUI
+functions; screenshots supplement rather than replace the unit tests.
 
 ## Timendus CHIP-8 test suite, v4.2
 
@@ -94,22 +95,25 @@ satisfy it" pins this behavior.
 
 ## Bundled ROM smoke tests
 
-Defaults are "Custom" settings (the startup configuration); profiles
-are applied through the settings dialog presets named below.
+ROMs with sidecar notes were run under the preset those notes now name. The two
+ROMs without notes used the 1800-opcode/second Custom startup configuration. A
+post-review deterministic run also executed every row for five emulated seconds
+without a machine error.
 
 | ROM | Profile | Speed | Observed |
 | --- | --- | --- | --- |
-| brix.ch8 | Custom | 900 | Brick wall, paddle, ball in play; no errors |
+| brix.ch8 | Original CHIP-8 | 900 | Brick wall, paddle, ball in play; no errors |
 | ibm-logo.ch8 | Custom | 1800 | IBM logo draws and animates |
-| kaleidoscope.ch8 | Custom | 900 | Draws outward from the center |
+| kaleidoscope.ch8 | Original CHIP-8 | 900 | Draws outward from the center |
 | keypad-test.ch8 | SUPER-CHIP 1.1 (quirks only) | 1800 | Clean static keypad grid; keys highlight |
 | maze.ch8 | Original CHIP-8 | 900 | Full maze pattern draws and regenerates |
-| particle.ch8 | Custom | 900 | Title screen and falling particles |
-| pong.ch8 | Custom | 900 | Court, scores, paddles moved with keys, ball in flight |
-| sierpinski.ch8 | Custom | 900 | Triangle grows from the top vertex |
-| space-invaders.ch8 | Custom | 1800 | Title screen renders |
-| stars.ch8 | Custom | 1800 | Starfield draws |
-| trip8.ch8 | Custom | 900 | Title screen renders |
+| particle.ch8 | Original CHIP-8 | 900 | Title screen and falling particles |
+| pong.ch8 | Original CHIP-8 | 900 | Court, scores, paddles moved with keys, ball in flight |
+| sierpinski.ch8 | Original CHIP-8 | 900 | Triangle grows from the top vertex |
+| space-invaders.ch8 | SUPER-CHIP 1.1 (quirks only) | 1800 | Title screen and invader formation render |
+| stars.ch8 | SUPER-CHIP 1.1 (quirks only) | 1800 | Starfield draws |
+| test-opcode.ch8 | Custom | 1800 | Completed opcode-result grid renders; no errors |
+| trip8.ch8 | Original CHIP-8 | 900 | Title screen renders |
 
 Notes:
 

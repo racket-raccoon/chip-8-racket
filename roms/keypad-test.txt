@@ -1,21 +1,9 @@
-Non-default setup for keypad-test.ch8
+Setup for keypad-test.ch8
 
-Use the Super-CHIP 1.1 profile:
+Use the SUPER-CHIP 1.1 (quirks only) preset (1800 opcodes/second). Speed is
+not functionally important for this static test screen, so 600 is also usable.
 
-  fx1e-sets-vf?            = #f
-  load-store-increments-i? = #f
-  logic-ops-clear-vf?      = #f
-  shifts-use-vy?           = #f
-  jump-uses-vx?            = #t
-
-Recommended platform speed:
-
-  opcodes/second = 1800
-
-Speed is not functionally important for this static test screen, so 600 is
-also usable.
-
-Why: this is Hap's Super-CHIP keypad test. In particular, it expects
-8XY6/8XYE to shift VX in place. With shifts-use-vy? set to #t, opcode
-8206 copies V0 into V2 first, corrupting the test's control state and
-eventually making the emulator execute sprite data as an opcode.
+This is Hap's SUPER-CHIP keypad test. In particular, it expects 8XY6/8XYE to
+shift VX in place. With "Shift instructions use VY" enabled, opcode 8206 copies
+V0 into V2 first, corrupting the test's control state and eventually making the
+emulator execute sprite data as an opcode.

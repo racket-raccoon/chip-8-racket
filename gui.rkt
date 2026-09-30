@@ -6,7 +6,6 @@
 
 (define scale-factor 10)
 
-(define opcodes/second 1800)
 ; The GUI timer only wakes the scheduler up; emulated time comes from
 ; the monotonic clock inside scheduler-run
 (define scheduler-poll-ms 8)
@@ -23,13 +22,16 @@
 (define current-rom-bytes #f)
 (define current-rom-note #f)
 (define paused? #f)
+; A machine fault cannot be resumed past: most opcode errors happen after
+; the PC has advanced. Reset, restart, or a successful load clears the fault.
+(define machine-failed? #f)
 
 ; A ROM's setup note is an adjacent .txt file with the same base name;
-; it is shown to the user as plain UTF-8 text and never parsed
+; it is shown to the user as plain UTF-8 text and never parsed or normalized
 (define (read-rom-note path)
   (define note-path (path-replace-extension path ".txt"))
   (and (file-exists? note-path)
-       (string-trim (file->string note-path) #:left? #f)))
+       (file->string note-path)))
 
 (define chip-8-frame%
   (class frame%
@@ -100,11 +102,12 @@
 (send canvas min-client-width (* screen-width scale-factor))
 (send canvas min-client-height (* screen-height scale-factor))
 
-(define scheduler (make-scheduler opcodes/second))
+(define scheduler (make-scheduler (compat-opcodes/second settings)))
 
-; Report one machine failure and leave the window usable: execution is
-; paused, the timer stops, and Reset/Restart/Load stay available
-(define (machine-error! message)
+; Report one failure and leave the window usable. Execution faults cannot be
+; resumed past, while a failed ROM load leaves the previous machine recoverable.
+(define (machine-error! message [execution-failure? #t])
+  (when execution-failure? (set! machine-failed? #t))
   (set! paused? #t)
   (send timer stop)
   (update-controls!)
@@ -148,7 +151,7 @@
 ; exact production path
 (define (load-rom-with-errors! path)
   (with-handlers ([exn:fail?
-                   (λ (e) (machine-error! (exn-message e)))])
+                   (λ (e) (machine-error! (exn-message e) #f))])
     (load-rom-from-path! path)))
 
 ; Read-only display of the loaded ROM's path and its setup note
@@ -225,29 +228,37 @@
   (scheduler-rebase! scheduler))
 
 (define (load-rom-from-path! path)
+  ; Stage all I/O and validate the ROM before replacing the cached lifecycle
+  ; state. A failed load therefore leaves the previous ROM available to reset.
+  (define rom-bytes (file->bytes path))
+  (define rom-note (read-rom-note path))
+  (load-rom! chip rom-bytes)
   (set! current-rom-path path)
-  (set! current-rom-bytes (file->bytes path))
-  (set! current-rom-note (read-rom-note path))
+  (set! current-rom-bytes rom-bytes)
+  (set! current-rom-note rom-note)
   (set! paused? #f)
-  (reload-cached-rom!)
+  (set! machine-failed? #f)
+  (scheduler-rebase! scheduler)
   (send timer start scheduler-poll-ms)
   (update-controls!)
   (send canvas refresh-now)
   (send canvas focus))
 
 (define (toggle-pause!)
-  (set! paused? (not paused?))
-  (if paused?
-      (send timer stop)
-      ; paused wall time must not queue overdue emulated work
-      (begin (scheduler-rebase! scheduler)
-             (send timer start scheduler-poll-ms)))
-  (update-controls!))
+  (unless machine-failed?
+    (set! paused? (not paused?))
+    (if paused?
+        (send timer stop)
+        ; paused wall time must not queue overdue emulated work
+        (begin (scheduler-rebase! scheduler)
+               (send timer start scheduler-poll-ms)))
+    (update-controls!)))
 
 (define (reset-rom!)
   ; a fresh machine left paused at its initial state
   (reload-cached-rom!)
   (set! paused? #t)
+  (set! machine-failed? #f)
   (send timer stop)
   (update-controls!)
   (send canvas refresh-now))
@@ -255,6 +266,7 @@
 (define (restart-rom!)
   (reload-cached-rom!)
   (set! paused? #f)
+  (set! machine-failed? #f)
   (send timer start scheduler-poll-ms)
   (update-controls!)
   (send canvas refresh-now))
@@ -263,7 +275,7 @@
 (define (update-controls!)
   (define has-rom? (and current-rom-bytes #t))
   (send pause-item set-label (if paused? "&Resume" "&Pause"))
-  (send pause-item enable has-rom?)
+  (send pause-item enable (and has-rom? (not machine-failed?)))
   (send reset-item enable has-rom?)
   (send restart-item enable has-rom?)
   (send rom-info-item enable (and current-rom-note #t)))

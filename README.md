@@ -93,8 +93,9 @@ press-and-release cycle while the timers keep ticking.
 Bad ROMs cannot crash the application: oversized ROMs are rejected at
 load, and invalid memory access, unknown opcodes, and stack
 over/underflow pause the machine and show one dialog naming the
-operation, the PC, and the opcode — the window stays open so you can
-load another ROM or reset.
+operation, the PC, and the opcode. Resume is disabled after an execution
+fault because the failing instruction may already have advanced the PC;
+the window stays open so you can load another ROM, reset, or restart.
 
 ## Tests
 

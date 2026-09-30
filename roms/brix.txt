@@ -1,12 +1,7 @@
-Non-default setup for brix.ch8
+Setup for brix.ch8
 
-Change the execution speed:
+Use the Original CHIP-8 preset (900 opcodes/second).
 
-  opcodes/second = 900
-
-Keep the current compatibility parameters. This ROM's SHA-1 matches Brix
-by Andreas Gustafsson, classified as original CHIP-8. The platform default
-is 15 opcodes per 60 Hz frame (900 per second).
-
-Note: the original COSMAC VIP also waited for vblank after drawing. This
-emulator has no parameter for that behavior, so the timing is approximate.
+This ROM's SHA-1 matches Brix by Andreas Gustafsson, classified as original
+CHIP-8. The preset includes the platform default of 15 opcodes per 60 Hz frame
+and the original COSMAC VIP vblank draw wait.

@@ -1,20 +1,9 @@
-Non-default setup for space-invaders.ch8
+Setup for space-invaders.ch8
 
-Use the Super-CHIP 1.1 profile:
+Use the SUPER-CHIP 1.1 (quirks only) preset (1800 opcodes/second).
 
-  fx1e-sets-vf?            = #f
-  load-store-increments-i? = #f
-  logic-ops-clear-vf?      = #f
-  shifts-use-vy?           = #f
-  jump-uses-vx?            = #t
-
-And change the execution speed:
-
-  opcodes/second = 1800
-
-Why: this David Winter ROM targets Super-CHIP 1.1, whose database default
-is 30 opcodes per 60 Hz frame (1800 per second). At 600 per second its
-startup and invader formation are drawn in slow, visibly separate chunks.
-Some short execution paths happen to produce the same state with the
-original CHIP-8 quirks, but that is not a reliable compatibility profile
-for the complete game.
+This David Winter ROM targets SUPER-CHIP 1.1, whose database default is 30
+opcodes per 60 Hz frame. At 600 per second its startup and invader formation
+are drawn in slow, visibly separate chunks. Some short execution paths happen
+to produce the same state with original CHIP-8 quirks, but that is not a
+reliable compatibility profile for the complete game.
