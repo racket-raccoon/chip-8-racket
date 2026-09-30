@@ -48,11 +48,10 @@ disk cannot make two resets behave differently.
 
 ## ROM setup notes
 
-If a ROM `foo.ch8` has an adjacent `foo.txt`, **File > ROM Info...**
-shows it as plain UTF-8 text. The notes describe the profile and speed
-the ROM expects (for example "set opcodes/second = 900"); they are
-displayed faithfully and never parsed or applied automatically — you
-apply them through the settings dialog.
+Every bundled ROM has an adjacent setup note: **File > ROM Info...** shows
+`foo.txt` for `foo.ch8` as plain UTF-8 text. The notes describe the profile and
+speed the ROM expects; they are displayed faithfully and never parsed or
+applied automatically — you apply them through the settings dialog.
 
 ## Settings
 

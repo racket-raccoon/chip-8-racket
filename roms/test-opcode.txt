@@ -1,0 +1,7 @@
+Setup for test-opcode.ch8
+
+Use the startup Custom configuration at 1800 opcodes/second.
+
+This is the Corax89 CHIP-8 opcode test. Let it run until the complete result
+grid is visible; the bundled configuration renders the passing grid without a
+machine error.

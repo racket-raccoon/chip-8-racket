@@ -1,0 +1,10 @@
+Setup for Timendus 5-quirks.ch8, suite v4.2
+
+For the normal regression run, use the Modern CHIP-8 preset (720 opcodes/second)
+and select platform 1, CHIP-8, in the ROM menu. VF RESET and DISP. WAIT should
+differ from original CHIP-8; MEMORY and CLIPPING should match, while SHIFTING
+and JUMPING should be reported as off.
+
+To validate the original compatibility profile, restart with the Original
+CHIP-8 preset (900 opcodes/second) and select platform 1 again. Every displayed
+quirk should then match the original platform.

@@ -1,0 +1,6 @@
+Setup for ibm-logo.ch8
+
+Use the startup Custom configuration at 1800 opcodes/second.
+
+This ROM only draws the IBM logo and does not depend on a known compatibility
+quirk. Its execution speed is not important once the image has been drawn.

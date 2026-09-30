@@ -95,10 +95,9 @@ satisfy it" pins this behavior.
 
 ## Bundled ROM smoke tests
 
-ROMs with sidecar notes were run under the preset those notes now name. The two
-ROMs without notes used the 1800-opcode/second Custom startup configuration. A
-post-review deterministic run also executed every row for five emulated seconds
-without a machine error.
+Every bundled ROM now has an adjacent setup note and was run under the profile
+that note names. A post-review deterministic run also executed every row for
+five emulated seconds without a machine error.
 
 | ROM | Profile | Speed | Observed |
 | --- | --- | --- | --- |

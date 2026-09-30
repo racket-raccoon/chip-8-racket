@@ -1,0 +1,7 @@
+Setup for Timendus 6-keypad.ch8, suite v4.2
+
+Use the Modern CHIP-8 preset (720 opcodes/second).
+
+The three menu entries validate EX9E (key down), EXA1 (key up), and FX0A (get
+key). The FX0A test should report ALL GOOD after a complete key press and
+release; the timers continue running while it waits.

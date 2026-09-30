@@ -1,0 +1,6 @@
+Setup for Timendus 4-flags.ch8, suite v4.2
+
+Use the Modern CHIP-8 preset (720 opcodes/second).
+
+Let the test run until all flag rows are populated. A successful run shows pass
+marks for every HAPPY, CARRY, and OTHER check.

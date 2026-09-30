@@ -1,0 +1,6 @@
+Setup for Timendus 3-corax+.ch8, suite v4.2
+
+Use the Modern CHIP-8 preset (720 opcodes/second).
+
+Let the test run until every opcode group is populated. A successful run shows
+a pass mark for every group and no failure marks.
